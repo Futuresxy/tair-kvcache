@@ -13,6 +13,7 @@ from .scheduler_simulator import (
     VllmRequestSpec,
     VllmSchedulerSimulator,
 )
+from .benchmark_runner import VllmBenchmarkRunner
 
 __all__ = [
     "COMPATIBLE_VLLM_VERSIONS",
@@ -20,5 +21,6 @@ __all__ = [
     "RequestMetrics",
     "SimulationResult",
     "VllmRequestSpec",
+    "VllmBenchmarkRunner",
     "VllmSchedulerSimulator",
 ]

@@ -1,7 +1,6 @@
 from hisim.spec.model import ModelInfo
 from hisim.spec.accelerator import AcceleratorInfo
 from hisim.simulation.types import SchedulerConfig, RequestStats
-from hisim.time_predictor.aiconfigurator import get_perf_model
 import numpy as np
 
 
@@ -28,6 +27,9 @@ def calc_kv_cache_per_layer_elems(
 def estimate_kv_cache_pool_capacity(
     model: ModelInfo, device: AcceleratorInfo, scheduler_config: SchedulerConfig
 ) -> int:
+    # Keep AIConfigurator optional for scheduler-only backends such as vLLM.
+    from hisim.time_predictor.aiconfigurator import get_perf_model
+
     # TODO
     # Ref: https://github.com/sgl-project/sglang/blob/v0.4.8/python/sglang/srt/model_executor/model_runner.py#L817
     perf_model = get_perf_model(scheduler_config, model)

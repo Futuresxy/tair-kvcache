@@ -4,9 +4,12 @@ import pytest
 
 from hisim.simulation.vllm import (
     LinearLatencyProfile,
+    VllmBenchmarkRunner,
     VllmRequestSpec,
     VllmSchedulerSimulator,
 )
+from hisim.dataset import GenericRequest, SimpleDataset
+from hisim.simulation.types import BenchmarkConfig
 
 
 MODEL_CONFIG = Path(__file__).parent / "assets" / "vllm_tiny_qwen"
@@ -101,3 +104,51 @@ def test_latency_profile_accounts_for_decode_context_length():
     )
 
     assert profile.predict_ms(0, 1, 200) > profile.predict_ms(0, 1, 100)
+
+
+def test_vllm_benchmark_runner_matches_hisim_contract_and_flushes_cache():
+    runner = VllmBenchmarkRunner(
+        model=str(MODEL_CONFIG),
+        instance_id="runner-instance",
+        num_gpu_blocks=128,
+        max_model_len=256,
+        max_num_batched_tokens=128,
+        max_num_seqs=8,
+    )
+    prompt = list(range(48))
+    dataset = SimpleDataset(
+        reqs=[GenericRequest(token_ids=prompt, input_length=48, output_length=2)]
+    )
+    config = BenchmarkConfig(ignore_request_timestamp=True)
+
+    cold = runner.benchmark(config, dataset=dataset)
+    warm = runner.benchmark(config, dataset=dataset)
+    runner.flush_cache()
+    cold_after_flush = runner.benchmark(config, dataset=dataset)
+
+    assert cold["backend"] == "vllm"
+    assert cold["completed"] == 1
+    assert cold["prefix_cache_hits"] == 0
+    assert warm["prefix_cache_hits"] >= 16
+    assert warm["prefix_cache_reused_ratio"] > 0
+    assert cold_after_flush["prefix_cache_hits"] == 0
+    assert runner.get_request_stats()[0]["ttft_ms"] > 0
+    assert runner.get_iteration_stats()
+
+
+def test_vllm_scheduler_batches_requests_with_the_same_arrival_time():
+    simulator = make_simulator()
+    result = simulator.run(
+        [
+            VllmRequestSpec(
+                request_id=f"batched-{index}",
+                prompt_token_ids=list(range(32 + index)),
+                max_tokens=2,
+                instance_id="instance-a",
+            )
+            for index in range(2)
+        ]
+    )
+
+    assert all(request.output_tokens == 2 for request in result.requests)
+    assert set(result.steps[0].scheduled_tokens) == {"batched-0", "batched-1"}

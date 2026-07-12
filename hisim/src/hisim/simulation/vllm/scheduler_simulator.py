@@ -517,6 +517,13 @@ class VllmSchedulerSimulator:
             steps=steps,
         )
 
+    def reset_prefix_cache(self) -> None:
+        """Clear this instance's vLLM block pool after all requests finish."""
+        if self._scheduler.has_unfinished_requests():
+            raise RuntimeError("cannot reset prefix cache with unfinished requests")
+        if not self._scheduler.reset_prefix_cache():
+            raise RuntimeError("vLLM refused to reset the prefix cache")
+
     def _make_request(self, spec: VllmRequestSpec) -> Any:
         return self._vllm["Request"](
             request_id=spec.request_id,

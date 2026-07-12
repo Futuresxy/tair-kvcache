@@ -55,6 +55,44 @@ PYTHONPATH=hisim/src conda run -n hisim-vllm023 \
   python -m pytest -q hisim/test/test_simulation_vllm_scheduler.py
 ```
 
+## HiSim BenchmarkRunner 接口
+
+`VllmBenchmarkRunner` 与现有 `SGLangBenchmarkRunner` 使用同一调用形态：
+
+```python
+from hisim.dataset import SimpleDataset
+from hisim.simulation.types import BenchmarkConfig
+from hisim.simulation.vllm import VllmBenchmarkRunner
+
+runner = VllmBenchmarkRunner(
+    model="/path/to/local/Qwen3-0.6B",
+    instance_id="replica-0",
+    latency_profile_path="/path/to/rtx4090_profile.json",
+)
+metrics = runner.benchmark(BenchmarkConfig(), dataset=SimpleDataset(reqs=[...]))
+runner.flush_cache()
+runner.shutdown()
+```
+
+它接受 `BaseDataset` 或 `DatasetArgs`，并返回与 SGLang 路径同名的 `completed`、
+`mean_ttft_ms`、`mean_tpot_ms`、`mean_e2e_latency_ms`、`output_throughput` 和
+`prefix_cache_reused_ratio`，同时增加 vLLM 原生 queries/hits。一个 runner 固定对应一个
+`instance_id`；cache 跨 `benchmark()` 调用保留，但绝不跨 runner/Instance 共享。
+
+两条路径的实现边界：
+
+| 能力 | SGLang backend | vLLM 0.23 backend |
+|---|---|---|
+| 调度与 KV block 行为 | 真实 SGLang scheduler + hook | 真实 vLLM Scheduler/KVCacheManager |
+| 模型 kernel | HiSim mock/hook | 固定 token runner + calibrated profile |
+| HiSim Dataset/BenchmarkConfig | 支持 | 支持 |
+| cold/warm/flush cache | 支持 | 支持 |
+| 统一 TTFT/TPOT/吞吐/命中指标 | 支持 | 支持 |
+| 模拟 HTTP server | 支持 | 尚未提供；当前为 offline runner |
+
+最后一项不是 scheduler 仿真或校准的阻塞项；需要用现有 HTTP benchmark 客户端透明替换 backend
+时，再在 offline runner 外封装 OpenAI-compatible simulation server。
+
 ## 后续校准闭环
 
 1. 在 RTX 4090 上以固定 Qwen 本地模型、input/output length、并发度和 prefix overlap
