@@ -1,0 +1,37 @@
+{
+  "captured_at": "2026-07-12T22:46:00+08:00",
+  "git_branch": "hisim-vllm-simulation",
+  "git_base_commit": "8f9aaf6",
+  "host": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "reported_memory_mib": 49140,
+    "driver": "590.48.01",
+    "driver_reported_cuda": "13.1"
+  },
+  "model_cache": {
+    "qwen3_0_6b": "/home/songxy/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca",
+    "qwen3_4b": "/home/songxy/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c",
+    "download_required": false
+  },
+  "environments": {
+    "hisim": {
+      "purpose": "HiSim, SGLang hooks and AIConfigurator regression baseline",
+      "python": "3.10.20",
+      "sglang": "0.5.6.post2",
+      "torch": "2.9.1+cu128",
+      "numpy": "1.26.4",
+      "aiconfigurator": "0.5.0@9f744a1910f317a091c88ade644d61094ea22119",
+      "verified_tests": "4 passed"
+    },
+    "hisim-vllm023": {
+      "purpose": "vLLM 0.23.0 real RTX 4090 service and adapter validation",
+      "python": "3.10.20",
+      "vllm": "0.23.0",
+      "torch": "2.11.0+cu130",
+      "transformers": "4.57.1",
+      "numpy": "2.2.6",
+      "pip_check": "No broken requirements found",
+      "gpu_validation": "passed outside restricted sandbox"
+    }
+  }
+}

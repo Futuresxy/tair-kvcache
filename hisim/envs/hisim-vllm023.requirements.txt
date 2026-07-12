@@ -1,0 +1,21 @@
+# Fixed real-vLLM environment for RTX 4090 calibration.
+# vLLM 0.23.0 resolves its CUDA/Torch dependency set from the published wheel.
+vllm==0.23.0
+
+# Record the resolved core stack explicitly to detect accidental drift.
+torch==2.11.0
+torchaudio==2.11.0
+torchvision==0.26.0
+triton==3.6.0
+flashinfer-python==0.6.12
+flashinfer-cubin==0.6.12
+transformers==4.57.1
+tokenizers==0.22.2
+numpy==2.2.6
+compressed-tensors==0.17.0
+llguidance==1.7.6
+outlines-core==0.2.14
+xgrammar==0.2.3
+ray==2.56.0
+safetensors==0.8.0
+

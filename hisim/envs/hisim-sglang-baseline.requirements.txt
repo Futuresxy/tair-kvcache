@@ -1,0 +1,18 @@
+# Existing HiSim/SGLang predictor baseline. Keep separate from vLLM 0.23.0.
+sglang==0.5.6.post2
+torch==2.9.1
+torchaudio==2.9.1
+torchvision==0.24.1
+transformers==4.57.1
+flashinfer-python==0.5.3
+flashinfer-cubin==0.5.3
+numpy==1.26.4
+llguidance==0.7.30
+outlines==0.1.11
+outlines-core==0.1.26
+scikit-learn==1.7.2
+xgboost==3.2.0
+
+# Installed from the pinned Git revision used by the current environment:
+aiconfigurator @ git+https://github.com/ai-dynamo/aiconfigurator.git@9f744a1910f317a091c88ade644d61094ea22119
+
