@@ -5,7 +5,7 @@
   "vllm_version": "0.23.0",
   "model": "/home/songxy/workspace/nano-vllm/huggingface/Qwen3-0.6B",
   "latency_profile": {
-    "name": "rtx4090-qwen3-0.6b-bs1-grid-v2",
+    "name": "rtx4090-qwen3-0.6b-bs1-server-v3",
     "scheduler_overhead_ms": 0.0,
     "prefill_base_ms": 14.421746962600285,
     "prefill_token_ms": 0.00687548890709877,
