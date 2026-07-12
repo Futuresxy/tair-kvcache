@@ -12,3 +12,6 @@ dependencies = [
     "xgboost",
     "aiconfigurator @ git+https://github.com/ai-dynamo/aiconfigurator.git@h20e-higher-acc"
 ]
+
+[project.optional-dependencies]
+vllm = ["vllm==0.23.0"]
