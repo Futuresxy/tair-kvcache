@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "latency_profile": {
+    "name": "rtx4090-qwen3-0.6b-bs1-in-sample-v1",
+    "scheduler_overhead_ms": 0.0,
+    "prefill_base_ms": 11.919608419702858,
+    "prefill_token_ms": 0.3208620387340487,
+    "decode_base_ms": 5.887816613540053,
+    "decode_token_ms": 0.0,
+    "calibrated": true
+  },
+  "calibration": {
+    "evaluation_kind": "in_sample_fit",
+    "source": "hisim/experiments/vllm/results/rtx4090_qwen3_0.6b_prefix128_output16_real.json",
+    "source_sha256": "7968418e3cab2e9b2bb06b5931c598f2bff2cc10f7499d649474faee113e21d7",
+    "accelerator": "NVIDIA GeForce RTX 4090",
+    "vllm": "0.23.0",
+    "torch": "2.11.0+cu130",
+    "model": "qwen3-0.6b",
+    "batch_size": 1,
+    "computed_prompt_tokens": [
+      144,
+      16,
+      16,
+      16,
+      16
+    ],
+    "ttft_ms": [
+      58.12374199740589,
+      18.1929690297693,
+      20.41449910029769,
+      15.115123940631747,
+      14.491012087091804
+    ],
+    "tpot_ms": [
+      5.887816613540053,
+      5.920691803718607,
+      5.935288732871413,
+      5.776627874001861,
+      5.786220061903198
+    ],
+    "limitations": [
+      "This is an in-sample fit, not a held-out accuracy result.",
+      "The profile currently covers sequential batch-size-1 requests only."
+    ]
+  }
+}

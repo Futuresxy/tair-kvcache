@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "evaluation_kind": "held_out",
+  "real_source": "hisim/experiments/vllm/results/rtx4090_qwen3_0.6b_heldout_p192_o32_real.json",
+  "simulation_source": "hisim/experiments/vllm/results/rtx4090_qwen3_0.6b_heldout_p192_o32_simulation.json",
+  "profile_source": "hisim/experiments/vllm/results/rtx4090_qwen3_0.6b_bs1_profile.json",
+  "summary": {
+    "ttft_mape_percent": 66.67583992504066,
+    "tpot_mape_percent": 18.29781524182739,
+    "e2e_mape_percent": 12.407190172054678,
+    "kv_cache_hit_rate_absolute_error": 0.0,
+    "real_active_output_throughput_tokens_per_s": 127.10962569752574,
+    "simulated_active_output_throughput_tokens_per_s": 145.38126897440407,
+    "active_throughput_error_percent": 14.374712518120484
+  },
+  "requests": [
+    {
+      "request_id": "cold",
+      "ttft_ms": {
+        "real": 30.986994970589876,
+        "simulated": 78.65891247638498,
+        "absolute_error": 47.67191750579511,
+        "absolute_percentage_error": 153.84491962205786
+      },
+      "tpot_ms": {
+        "real": 8.243045356545236,
+        "simulated": 5.887816613540054,
+        "absolute_error": 2.355228743005182,
+        "absolute_percentage_error": 28.57231327903657
+      },
+      "e2e_latency_ms": {
+        "real": 286.8302259594202,
+        "simulated": 261.18122749612667,
+        "absolute_error": 25.648998463293537,
+        "absolute_percentage_error": 8.942223009273183
+      },
+      "kv_cache_hit_rate": {
+        "real": 0.0,
+        "simulated": 0.0,
+        "absolute_error": 0.0,
+        "absolute_percentage_error": 0.0
+      }
+    },
+    {
+      "request_id": "warm-1",
+      "ttft_ms": {
+        "real": 24.48129910044372,
+        "simulated": 17.053401039447635,
+        "absolute_error": 7.427898060996085,
+        "absolute_percentage_error": 30.341110700540625
+      },
+      "tpot_ms": {
+        "real": 7.420738062430774,
+        "simulated": 5.887816613540053,
+        "absolute_error": 1.532921448890721,
+        "absolute_percentage_error": 20.657263953992597
+      },
+      "e2e_latency_ms": {
+        "real": 254.56872000359,
+        "simulated": 199.5757160591893,
+        "absolute_error": 54.9930039444007,
+        "absolute_percentage_error": 21.60241994524118
+      },
+      "kv_cache_hit_rate": {
+        "real": 0.9230769230769231,
+        "simulated": 0.9230769230769231,
+        "absolute_error": 0.0,
+        "absolute_percentage_error": 0.0
+      }
+    },
+    {
+      "request_id": "warm-2",
+      "ttft_ms": {
+        "real": 20.263430196791887,
+        "simulated": 17.053401039447635,
+        "absolute_error": 3.210029157344252,
+        "absolute_percentage_error": 15.841489452523517
+      },
+      "tpot_ms": {
+        "real": 6.241316576638529,
+        "simulated": 5.887816613540053,
+        "absolute_error": 0.35349996309847587,
+        "absolute_percentage_error": 5.663868492453
+      },
+      "e2e_latency_ms": {
+        "real": 213.85463513433933,
+        "simulated": 199.5757160591893,
+        "absolute_error": 14.278919075150043,
+        "absolute_percentage_error": 6.67692756164967
+      },
+      "kv_cache_hit_rate": {
+        "real": 0.9230769230769231,
+        "simulated": 0.9230769230769231,
+        "absolute_error": 0.0,
+        "absolute_percentage_error": 0.0
+      }
+    }
+  ]
+}

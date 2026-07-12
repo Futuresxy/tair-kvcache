@@ -1,0 +1,120 @@
+{
+  "schema_version": 2,
+  "latency_profile": {
+    "name": "rtx4090-qwen3-0.6b-bs1-server-v3",
+    "scheduler_overhead_ms": 0.0,
+    "prefill_base_ms": 14.421746962600285,
+    "prefill_token_ms": 0.00687548890709877,
+    "decode_base_ms": 5.774436889354279,
+    "decode_token_ms": 0.0,
+    "decode_context_token_ms": 0.0,
+    "calibrated": true
+  },
+  "calibration": {
+    "evaluation_kind": "multi_length_fit",
+    "sources": [
+      {
+        "path": "hisim/experiments/vllm/results/train_grid_p64_o16_server_real.json",
+        "sha256": "ac4c443cf74dc6e9352633daa277bb02c64e160605b8a975b3cf9187562f02e1"
+      },
+      {
+        "path": "hisim/experiments/vllm/results/train_grid_p128_o16_server_real.json",
+        "sha256": "265ef47e3e3c624413970cf95a37b00b72dcf71054a439638c9488968d78f7f5"
+      },
+      {
+        "path": "hisim/experiments/vllm/results/train_grid_p192_o16_server_real.json",
+        "sha256": "55aa44a7d22925fe3115357b67de0857e7292ec2cd92dd4d0c15d1cab4749918"
+      }
+    ],
+    "accelerator": "NVIDIA GeForce RTX 4090",
+    "vllm": "0.23.0",
+    "torch": "2.11.0+cu130",
+    "model": "qwen3-0.6b",
+    "batch_size": 1,
+    "request_count": 18,
+    "computed_prompt_tokens": [
+      80,
+      16,
+      80,
+      16,
+      80,
+      16,
+      144,
+      16,
+      144,
+      16,
+      144,
+      16,
+      208,
+      16,
+      208,
+      16,
+      208,
+      16
+    ],
+    "decode_context_tokens": [
+      87.5,
+      87.5,
+      87.5,
+      87.5,
+      87.5,
+      87.5,
+      151.5,
+      151.5,
+      151.5,
+      151.5,
+      151.5,
+      151.5,
+      215.5,
+      215.5,
+      215.5,
+      215.5,
+      215.5,
+      215.5
+    ],
+    "ttft_ms": [
+      27.762651443481445,
+      13.323068618774414,
+      13.605117797851562,
+      13.180017471313477,
+      13.435602188110352,
+      13.547182083129883,
+      17.1201229095459,
+      13.257980346679688,
+      15.040159225463867,
+      13.396978378295898,
+      13.702869415283203,
+      14.352560043334961,
+      16.585350036621094,
+      15.937089920043945,
+      13.673782348632812,
+      13.48114013671875,
+      14.24860954284668,
+      13.841867446899414
+    ],
+    "tpot_ms": [
+      5.758794924865141,
+      5.656846736868227,
+      5.631603673100449,
+      5.6035679299384356,
+      5.574984134485317,
+      6.047107403477026,
+      5.780956599240494,
+      6.055064064761028,
+      5.801374201352405,
+      5.776893797641014,
+      6.275031405190646,
+      5.7879133305202,
+      5.7202708752204785,
+      5.733204400166891,
+      5.690777068957709,
+      5.68777499720452,
+      5.681546265259407,
+      5.676152200127627
+    ],
+    "limitations": [
+      "The profile covers sequential batch-size-1 requests.",
+      "Concurrent batch-shape validation is a separate experiment."
+    ]
+  }
+}

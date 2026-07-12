@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from hisim.simulation.vllm import VllmRequestSpec, VllmSchedulerSimulator
+from hisim.simulation.vllm import (
+    LinearLatencyProfile,
+    VllmRequestSpec,
+    VllmSchedulerSimulator,
+)
 
 
 MODEL_CONFIG = Path(__file__).parent / "assets" / "vllm_tiny_qwen"
@@ -86,3 +90,14 @@ def test_vllm_simulator_rejects_cross_instance_request():
                 )
             ]
         )
+
+
+def test_latency_profile_accounts_for_decode_context_length():
+    profile = LinearLatencyProfile(
+        scheduler_overhead_ms=0,
+        decode_base_ms=1,
+        decode_token_ms=0,
+        decode_context_token_ms=0.01,
+    )
+
+    assert profile.predict_ms(0, 1, 200) > profile.predict_ms(0, 1, 100)

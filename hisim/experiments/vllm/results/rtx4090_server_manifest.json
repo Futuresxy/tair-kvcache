@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-12",
+  "branch": "hisim-vllm-simulation",
+  "starting_commit": "5212ce9",
+  "conda_environment": "hisim-vllm023",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 18000,
+    "served_model_name": "qwen3-0.6b",
+    "command": "conda run -n hisim-vllm023 env CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 VLLM_LOGGING_LEVEL=INFO PYTHONHASHSEED=0 vllm serve /home/songxy/workspace/nano-vllm/huggingface/Qwen3-0.6B --host 127.0.0.1 --port 18000 --served-model-name qwen3-0.6b --max-model-len 512 --gpu-memory-utilization 0.30 --enforce-eager --enable-prefix-caching"
+  },
+  "model": {
+    "path": "/home/songxy/workspace/nano-vllm/huggingface/Qwen3-0.6B",
+    "config_sha256": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd",
+    "weights_sha256": "f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b",
+    "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+  },
+  "shutdown": {
+    "clean": true,
+    "port_released": true,
+    "vllm_gpu_process_released": true
+  }
+}

@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "evaluation_kind": "held_out",
+  "real_source": "hisim/experiments/vllm/results/heldout_grid_p160_o24_real.json",
+  "simulation_source": "hisim/experiments/vllm/results/heldout_grid_p160_o24_simulation.json",
+  "profile_source": "hisim/experiments/vllm/results/rtx4090_qwen3_0.6b_bs1_grid_profile_v2.json",
+  "summary": {
+    "ttft_mape_percent": 22.349019469850646,
+    "tpot_mape_percent": 6.681421820913367,
+    "e2e_mape_percent": 7.703723274070781,
+    "kv_cache_hit_rate_absolute_error": 0.0,
+    "real_active_output_throughput_tokens_per_s": 142.05967820972643,
+    "simulated_active_output_throughput_tokens_per_s": 153.29709742294114,
+    "active_throughput_error_percent": 7.910351026295167
+  },
+  "requests": [
+    {
+      "request_id": "group-0-cold",
+      "ttft_ms": {
+        "real": 30.691237887367606,
+        "simulated": 21.507382575590682,
+        "absolute_error": 9.183855311776924,
+        "absolute_percentage_error": 29.92337860558229
+      },
+      "tpot_ms": {
+        "real": 5.999093531104534,
+        "simulated": 5.942042685907194,
+        "absolute_error": 0.05705084519733994,
+        "absolute_percentage_error": 0.9509910939300845
+      },
+      "e2e_latency_ms": {
+        "real": 168.7274700962007,
+        "simulated": 158.17436435145612,
+        "absolute_error": 10.553105744744585,
+        "absolute_percentage_error": 6.2545273385108455
+      },
+      "kv_cache_hit_rate": {
+        "real": 0.0,
+        "simulated": 0.0,
+        "absolute_error": 0.0,
+        "absolute_percentage_error": 0.0
+      }
+    },
+    {
+      "request_id": "group-0-warm-1",
+      "ttft_ms": {
+        "real": 24.24828801304102,
+        "simulated": 18.276128416699862,
+        "absolute_error": 5.972159596341157,
+        "absolute_percentage_error": 24.629201010517768
+      },
+      "tpot_ms": {
+        "real": 6.580420385074357,
+        "simulated": 5.942042685907208,
+        "absolute_error": 0.6383776991671484,
+        "absolute_percentage_error": 9.701168949860866
+      },
+      "e2e_latency_ms": {
+        "real": 175.68105785176158,
+        "simulated": 154.94311019256565,
+        "absolute_error": 20.737947659195925,
+        "absolute_percentage_error": 11.804316249447028
+      },
+      "kv_cache_hit_rate": {
+        "real": 0.9090909090909091,
+        "simulated": 0.9090909090909091,
+        "absolute_error": 0.0,
+        "absolute_percentage_error": 0.0
+      }
+    },
+    {
+      "request_id": "group-1-cold",
+      "ttft_ms": {
+        "real": 22.269236855208874,
+        "simulated": 21.50738257559067,
+        "absolute_error": 0.7618542796182055,
+        "absolute_percentage_error": 3.4211063655735665
+      },
+      "tpot_ms": {
+        "real": 6.8823703078796035,
+        "simulated": 5.942042685907159,
+        "absolute_error": 0.9403276219724441,
+        "absolute_percentage_error": 13.662845501002266
+      },
+      "e2e_latency_ms": {
+        "real": 180.60405482538044,
+        "simulated": 158.17436435145532,
+        "absolute_error": 22.42969047392512,
+        "absolute_percentage_error": 12.419261846369718
+      },
+      "kv_cache_hit_rate": {
+        "real": 0.0,
+        "simulated": 0.0,
+        "absolute_error": 0.0,
+        "absolute_percentage_error": 0.0
+      }
+    },
+    {
+      "request_id": "group-1-warm-1",
+      "ttft_ms": {
+        "real": 23.328722920268774,
+        "simulated": 18.276128416699862,
+        "absolute_error": 5.052594503568912,
+        "absolute_percentage_error": 21.658255879832364
+      },
+      "tpot_ms": {
+        "real": 6.768962479722888,
+        "simulated": 5.942042685907154,
+        "absolute_error": 0.8269197938157342,
+        "absolute_percentage_error": 12.216344769126081
+      },
+      "e2e_latency_ms": {
+        "real": 179.05713012441993,
+        "simulated": 154.9431101925644,
+        "absolute_error": 24.114019931855523,
+        "absolute_percentage_error": 13.467221280213536
+      },
+      "kv_cache_hit_rate": {
+        "real": 0.9090909090909091,
+        "simulated": 0.9090909090909091,
+        "absolute_error": 0.0,
+        "absolute_percentage_error": 0.0
+      }
+    },
+    {
+      "request_id": "group-2-cold",
+      "ttft_ms": {
+        "real": 16.171111958101392,
+        "simulated": 21.50738257559067,
+        "absolute_error": 5.3362706174892764,
+        "absolute_percentage_error": 32.99878592959661
+      },
+      "tpot_ms": {
+        "real": 6.085308309158553,
+        "simulated": 5.942042685907159,
+        "absolute_error": 0.14326562325139403,
+        "absolute_percentage_error": 2.354287013457895
+      },
+      "e2e_latency_ms": {
+        "real": 156.16908390074968,
+        "simulated": 158.17436435145532,
+        "absolute_error": 2.0052804507056408,
+        "absolute_percentage_error": 1.284044447606582
+      },
+      "kv_cache_hit_rate": {
+        "real": 0.0,
+        "simulated": 0.0,
+        "absolute_error": 0.0,
+        "absolute_percentage_error": 0.0
+      }
+    },
+    {
+      "request_id": "group-2-warm-1",
+      "ttft_ms": {
+        "real": 15.046614920720458,
+        "simulated": 18.276128416699976,
+        "absolute_error": 3.2295134959795178,
+        "absolute_percentage_error": 21.463389028001277
+      },
+      "tpot_ms": {
+        "real": 6.014389390854732,
+        "simulated": 5.942042685907154,
+        "absolute_error": 0.07234670494757811,
+        "absolute_percentage_error": 1.2028935981030087
+      },
+      "e2e_latency_ms": {
+        "real": 153.41970091685653,
+        "simulated": 154.94311019256452,
+        "absolute_error": 1.5234092757079907,
+        "absolute_percentage_error": 0.9929684822769789
+      },
+      "kv_cache_hit_rate": {
+        "real": 0.9090909090909091,
+        "simulated": 0.9090909090909091,
+        "absolute_error": 0.0,
+        "absolute_percentage_error": 0.0
+      }
+    }
+  ]
+}

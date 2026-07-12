@@ -61,14 +61,24 @@ class LinearLatencyProfile:
     prefill_token_ms: float = 0.015
     decode_base_ms: float = 0.20
     decode_token_ms: float = 0.04
+    decode_context_token_ms: float = 0.0
     calibrated: bool = False
 
-    def predict_ms(self, prefill_tokens: int, decode_tokens: int) -> float:
+    def predict_ms(
+        self,
+        prefill_tokens: int,
+        decode_tokens: int,
+        decode_context_tokens: int = 0,
+    ) -> float:
         latency = self.scheduler_overhead_ms
         if prefill_tokens:
             latency += self.prefill_base_ms + self.prefill_token_ms * prefill_tokens
         if decode_tokens:
-            latency += self.decode_base_ms + self.decode_token_ms * decode_tokens
+            latency += (
+                self.decode_base_ms
+                + self.decode_token_ms * decode_tokens
+                + self.decode_context_token_ms * decode_context_tokens
+            )
         return latency
 
 
@@ -407,6 +417,7 @@ class VllmSchedulerSimulator:
 
             prefill_tokens = 0
             decode_tokens = 0
+            decode_context_tokens = 0
             for request_id, count in scheduled_tokens.items():
                 request_metrics = metrics[request_id]
                 if request_metrics.first_scheduled_time_ms is None:
@@ -415,9 +426,14 @@ class VllmSchedulerSimulator:
                     prefill_tokens += count
                 else:
                     decode_tokens += count
+                    decode_context_tokens += self._scheduler.requests[
+                        request_id
+                    ].num_computed_tokens
 
             latency_ms = self.latency_profile.predict_ms(
-                prefill_tokens=prefill_tokens, decode_tokens=decode_tokens
+                prefill_tokens=prefill_tokens,
+                decode_tokens=decode_tokens,
+                decode_context_tokens=decode_context_tokens,
             )
             start_time_ms = clock_ms
             clock_ms += latency_ms
