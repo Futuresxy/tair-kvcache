@@ -15,6 +15,7 @@ from .scheduler_simulator import (
 )
 from .benchmark_runner import VllmBenchmarkRunner
 from .engine import create_hisim_llm
+from .tiered_cache import TieredKVCache, TieredKVCacheConfig
 
 __all__ = [
     "COMPATIBLE_VLLM_VERSIONS",
@@ -24,5 +25,7 @@ __all__ = [
     "VllmRequestSpec",
     "VllmBenchmarkRunner",
     "create_hisim_llm",
+    "TieredKVCache",
+    "TieredKVCacheConfig",
     "VllmSchedulerSimulator",
 ]

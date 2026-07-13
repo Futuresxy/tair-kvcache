@@ -113,6 +113,11 @@ class HiSimWorker(WorkerBase):
     def compile_or_warm_up_model(self) -> CompilationTimes:
         return CompilationTimes(language_model=0.0, encoder=0.0)
 
+    def get_kv_connector_handshake_metadata(self):
+        # HiSim's synchronous tiered connector needs no out-of-band worker
+        # handshake; its transfer plan is carried in SchedulerOutput metadata.
+        return None
+
     def execute_model(self, scheduler_output) -> ModelRunnerOutput:
         for request_id in scheduler_output.finished_req_ids:
             self._request_prompt_lengths.pop(request_id, None)
@@ -152,11 +157,18 @@ class HiSimWorker(WorkerBase):
                 decode_context_tokens += before_computed.get(request_id, 0) + scheduled
                 sampled_token_ids.append([self.generated_token_id])
 
-        predicted_latency_ms = self.latency_profile.predict_ms(
+        predicted_compute_latency_ms = self.latency_profile.predict_ms(
             prefill_tokens=prefill_tokens,
             decode_tokens=decode_tokens,
             decode_context_tokens=decode_context_tokens,
         )
+        connector_metadata = getattr(
+            scheduler_output, "kv_connector_metadata", None
+        )
+        tiered_kv_latency_ms = float(
+            getattr(connector_metadata, "critical_path_latency_ms", 0.0)
+        )
+        predicted_latency_ms = predicted_compute_latency_ms + tiered_kv_latency_ms
         wall_start = time.perf_counter()
         if self.execution_mode == "wall_clock":
             time.sleep(predicted_latency_ms / self.time_scale / 1000.0)
@@ -170,6 +182,14 @@ class HiSimWorker(WorkerBase):
                 "prefill_tokens": prefill_tokens,
                 "decode_tokens": decode_tokens,
                 "decode_context_tokens": decode_context_tokens,
+                "predicted_compute_latency_ms": predicted_compute_latency_ms,
+                "tiered_kv_latency_ms": tiered_kv_latency_ms,
+                "tiered_kv_decisions": getattr(
+                    connector_metadata, "decisions", {}
+                ),
+                "tiered_kv_store_plan": getattr(
+                    connector_metadata, "store_plan", {}
+                ),
                 "predicted_latency_ms": predicted_latency_ms,
                 "wall_elapsed_ms": wall_elapsed_ms,
                 "execution_mode": self.execution_mode,

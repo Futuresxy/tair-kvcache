@@ -86,3 +86,21 @@ PYTHONPATH=hisim/src conda run -n hisim-vllm023 \
 
 这些结果通过完整 OpenAI server 获得，不是直接调用 standalone scheduler。真实服务和 HiSim
 服务使用完全相同的 prompt token IDs、vLLM Scheduler 配置和 prefix-cache 指标口径。
+
+## 多级 KVCache 策略实验
+
+`tiered_kv_rtx4090_example.json` 是 HBM/DRAM/SSD 实验模板。HBM 容量由 server 的
+`--hisim-num-gpu-blocks` 控制；DRAM/SSD 容量、LRU/FIFO、读写带宽、I/O 重叠比例和
+cost-aware 重算阈值由该 JSON 控制。每个 Instance 应使用独立的 `ssd_state_path` 和
+`metrics_path`。
+
+建议固定同一份 token workload，至少比较：
+
+- `prefetch_policy=none`：全部重计算基线；
+- `prefetch_policy=always`：最大缓存复用基线；
+- `prefetch_policy=cost_aware`：以 TTFT 临界路径最短为目标；
+- `eviction_policy=lru` 与 `fifo`；
+- 不同 HBM/DRAM/SSD 容量和长上下文长度。
+
+报告时同时给出 TTFT/TPOT/E2E、吞吐、HBM/DRAM/SSD hit 与 candidate tokens、读写流量、
+逐出/提升次数、cache/recompute 决策和预估收益，不能只比较单一 hit rate。

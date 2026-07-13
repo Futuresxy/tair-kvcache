@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+from .tiered_cache import TieredKVCacheConfig
 
 
 WORKER_CLASS = "hisim.simulation.vllm.worker.HiSimWorker"
@@ -20,6 +22,9 @@ def create_hisim_llm(
     trace_path: str | Path | None = None,
     num_gpu_blocks: int = 4096,
     generated_token_id: int = 9707,
+    tiered_kv_config: (
+        TieredKVCacheConfig | Mapping[str, Any] | str | Path | None
+    ) = None,
     **llm_kwargs: Any,
 ):
     """Create a standard ``vllm.LLM`` whose model worker is replaced by HiSim.
@@ -53,6 +58,7 @@ def create_hisim_llm(
     os.environ.setdefault("PYTHONHASHSEED", "0")
 
     from vllm import LLM
+    from vllm.config import KVTransferConfig
 
     options = {
         "worker_cls": WORKER_CLASS,
@@ -64,4 +70,26 @@ def create_hisim_llm(
         "async_scheduling": False,
         **llm_kwargs,
     }
+    if tiered_kv_config is not None:
+        if isinstance(tiered_kv_config, TieredKVCacheConfig):
+            config = tiered_kv_config
+            config.validate()
+        elif isinstance(tiered_kv_config, (str, Path)):
+            config = TieredKVCacheConfig.from_json_file(tiered_kv_config)
+        else:
+            config = TieredKVCacheConfig.from_mapping(tiered_kv_config)
+        options["kv_transfer_config"] = KVTransferConfig(
+            kv_connector="HiSimTieredKVConnector",
+            kv_connector_module_path=(
+                "hisim.simulation.vllm.tiered_connector"
+            ),
+            kv_role="kv_both",
+            kv_connector_extra_config={
+                "instance_id": instance_id,
+                "tiered_config": vars(config),
+            },
+            kv_load_failure_policy="recompute",
+        )
+        # The current HiSim connector models dense full-attention blocks.
+        options["disable_hybrid_kv_cache_manager"] = True
     return LLM(model=model, **options)
