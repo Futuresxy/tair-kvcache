@@ -1,3 +1,4 @@
+import copy
 import json
 
 from hisim.spec import ModelInfo, AcceleratorInfo, DataType
@@ -190,14 +191,26 @@ class ConfigManager:
         predictor_config = config.get("predictor", {})
         if predictor_config.get("name") == "aiconfigurator":
             device_name = predictor_config.get("device_name")
-            hw.name = device_name
+            predictor_hw = copy.copy(hw)
+            if device_name is not None:
+                platform_names = {hw.name.upper()}
+                platform_names.update(alias.upper() for alias in hw.device_alias)
+                if device_name.upper() not in platform_names:
+                    logger.warning(
+                        "AIConfigurator device_name=%s differs from platform "
+                        "accelerator=%s. This is valid only when intentionally using "
+                        "a compatible predictor database as a proxy.",
+                        device_name,
+                        hw.name,
+                    )
+                predictor_hw.name = device_name
             database_mode = predictor_config.get("database_mode", "SILICON")
             prefill_scale_factor = predictor_config.get("prefill_scale_factor", 1)
             decode_scale_factor = predictor_config.get("decode_scale_factor", 1)
             xgb_model_path = predictor_config.get("xgb_model_path", None)
             return AIConfiguratorTimePredictor(
                 model,
-                hw=hw,
+                hw=predictor_hw,
                 config=sched_config,
                 database_path=predictor_config.get("database_path"),
                 database_mode=database_mode,

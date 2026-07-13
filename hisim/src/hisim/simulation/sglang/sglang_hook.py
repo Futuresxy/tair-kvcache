@@ -282,13 +282,14 @@ class C_HiCacheController(BaseHook):
     @staticmethod
     def calc_prefetch_pages(
         required_pages: int, page_size_byte: int, max_dur: float, bandwidth: float
-    ) -> tuple[float, float]:
+    ) -> tuple[int, float]:
         _prefetch_dur = required_pages * page_size_byte / bandwidth
         if _prefetch_dur > max_dur:
-            _completed_pages = max(max_dur * bandwidth / page_size_byte, 1)
+            _completed_pages = max(int(max_dur * bandwidth / page_size_byte), 1)
+            _completed_pages = min(_completed_pages, required_pages)
             return _completed_pages, max_dur
         else:
-            return required_pages, _prefetch_dur
+            return int(required_pages), _prefetch_dur
 
     @classmethod
     def hook(cls, target):
@@ -396,7 +397,9 @@ class C_HiCacheController(BaseHook):
                     remain_dur,
                 )
                 if completed_tokens < storage_hit_count - operation.completed_tokens:
-                    operation.completed_tokens += completed_tokens
+                    operation.completed_tokens = (
+                        int(operation.completed_tokens) + completed_tokens
+                    )
                     remain_dur = 0
                 else:
                     operation.completed_tokens = int(storage_hit_count)
@@ -409,7 +412,7 @@ class C_HiCacheController(BaseHook):
                     )
                 # update request states
                 req_stats = C_SchedulerHook.REQUEST_STATS[operation.request_id]
-                req_stats.prefetch_complete_tokens = operation.completed_tokens
+                req_stats.prefetch_complete_tokens = int(operation.completed_tokens)
                 record_prefetch_completion(self, operation)
 
             while remain_dur > 0:
@@ -1004,11 +1007,16 @@ class C_SchedulerHook(BaseHook):
                         )
                     )
                     predicted_latency = float(predicted_latency)
+                    if predicted_latency < 0:
+                        # Predictors use negative latency as an OOM/error sentinel.
+                        # Keep the simulated clock monotonic while preserving the
+                        # estimated latency magnitude, matching blocking-mode behavior.
+                        predicted_latency = abs(predicted_latency)
 
                     forward_latency = 0
                     if C_SchedulerHook.SIM_MODE == MockSimulationMode.BLOCKING:
                         now = time.time()
-                        time.sleep(abs(predicted_latency))
+                        time.sleep(predicted_latency)
                         now = time.time()
                         forward_latency = now - C_SchedulerHook.LAST_CPU_TS
                         C_SchedulerHook.LAST_CPU_TS = now
@@ -1125,7 +1133,15 @@ class C_SchedulerHook(BaseHook):
 
                 try:
                     with open(f"{output_dir}/metrics.json", "w") as f:
-                        f.write(json.dumps(metrics, cls=CustomJsonEncoder) + "\n")
+                        f.write(
+                            json.dumps(
+                                metrics,
+                                cls=CustomJsonEncoder,
+                                indent=2,
+                                sort_keys=True,
+                            )
+                            + "\n"
+                        )
 
                     with open(f"{output_dir}/iteration.jsonl", "w") as f:
                         for item in C_SchedulerHook.ITERATION_STATS:
