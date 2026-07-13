@@ -82,6 +82,8 @@ def test_cost_aware_policy_selects_cache_only_when_faster(tmp_path):
     assert cache_decision.estimated_savings_ms > 0
     assert recompute_decision.decision == "recompute"
     assert recompute_decision.selected_external_tokens == 0
+    assert recompute_decision.best_candidate_blocks > 0
+    assert recompute_decision.best_candidate_savings_ms < 0
 
 
 def test_ssd_state_is_persistent_and_instance_isolated(tmp_path):

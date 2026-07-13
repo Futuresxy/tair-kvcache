@@ -104,3 +104,30 @@ cost-aware 重算阈值由该 JSON 控制。每个 Instance 应使用独立的 `
 
 报告时同时给出 TTFT/TPOT/E2E、吞吐、HBM/DRAM/SSD hit 与 candidate tokens、读写流量、
 逐出/提升次数、cache/recompute 决策和预估收益，不能只比较单一 hit rate。
+
+### RTX 4090 长上下文与 I/O 校准
+
+真实 vLLM 0.23 服务使用 Qwen3-0.6B、batch size 1、8 output tokens；每个长度包含 5 组独立
+cold→warm pair。warm request 保留同一 prefix，TTFT 差值用于估算被 cache 避免的重计算时间。
+
+| prompt tokens | cold TTFT mean ms | warm TTFT mean ms | saved compute median ms | warm hit tokens |
+|---:|---:|---:|---:|---:|
+| 512 | 24.99 | 23.92 | 0.59 | 496 |
+| 1024 | 21.84 | 23.18 | 0.00 | 1008 |
+| 2048 | 27.24 | 23.87 | 3.02 | 2032 |
+| 4096 | 55.93 | 25.90 | 30.21 | 4080 |
+| 6144 | 85.60 | 25.94 | 55.95 | 6128 |
+| 8064 | 123.29 | 28.29 | 94.26 | 8048 |
+
+拟合得到 `0.0007583432*tokens + 1.37160099e-6*tokens^2` ms；in-sample MAE 为
+1.94 ms，leave-one-length-out MAE 为 3.16 ms。GPU-local NUMA 1 的实测传输为：
+
+- pinned DRAM→HBM：6.730 GB/s；
+- HBM→pinned DRAM：6.596 GB/s；
+- NVMe direct read/write：5.413/6.015 GB/s；
+- 串行 SSD→DRAM→HBM：3.000 GB/s。
+
+使用 `benchmark_tier_io.py` 重测 I/O，使用 `fit_tiered_cost_profile.py` 从真实 JSON 重新生成
+calibrated config 和校准报告。`rtx4090_tiered_policy_engine_validation.json` 进一步通过完整 native
+vLLM offline EngineCore 验证：8064 token 在无 overlap 时走重算，50% DRAM overlap 时加载
+7952 个 external token。

@@ -137,6 +137,24 @@ DRAM/SSD eviction、SSD→DRAM promotion、cache/recompute 决策数、估算加
 重计算时延。candidate 表示数据存在但可能因 cost-aware 判断而放弃，hit 表示实际采用。Worker JSONL trace
 同时记录每个请求的 tier、选择的 token 数、加载时延、剩余重算 token 和预估收益。
 
+RTX 4090 + Qwen3-0.6B 的实测配置已经生成在
+`hisim/experiments/vllm/rtx4090_qwen3_0.6b_tiered_kv_calibrated.json`。它使用 512～8064 token
+cold/warm 真机 TTFT 拟合重计算曲线，并用 pinned CUDA copy 和 `fio direct I/O` 拟合分层带宽。
+该配置适用于本机、该模型和 batch size 1；换 GPU、模型、NUMA、SSD 或并发度必须重新校准。
+
+```text
+recompute_ms = 0.0007583432 * tokens
+             + 1.37160099e-6 * tokens^2
+DRAM -> HBM = 6.730 GB/s
+HBM -> DRAM = 6.596 GB/s
+SSD -> DRAM -> HBM = 3.000 GB/s
+```
+
+实测结果表明，小模型的外部 KV 并非总是值得读取：8064-token prefix 在没有 I/O overlap 时选择
+重计算；当 50% DRAM prefetch 能被其他计算隐藏时，原生 vLLM Scheduler 选择加载 7952 个
+DRAM token，预计节省 27.10 ms。这个结果正是 cost-aware 策略存在的原因，不能把“cache 中有
+数据”等同于“读取一定更快”。
+
 ### 原生 offline API
 
 ```python

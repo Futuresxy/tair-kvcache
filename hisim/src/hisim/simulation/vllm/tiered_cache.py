@@ -203,6 +203,10 @@ class TieredLookupDecision:
     ssd_blocks: int
     baseline_recompute_tokens: int
     selected_recompute_tokens: int
+    best_candidate_blocks: int
+    best_candidate_load_latency_ms: float
+    best_candidate_total_latency_ms: float
+    best_candidate_savings_ms: float
     raw_load_latency_ms: float
     effective_load_latency_ms: float
     baseline_recompute_latency_ms: float
@@ -353,47 +357,48 @@ class TieredKVCache:
             end_token=len(prompt_token_ids),
         )
         selected_count = 0
-        selected_total_ms = baseline_compute_ms
         selected_raw_load_ms = 0.0
         selected_effective_load_ms = 0.0
+        best_candidate_count = 0
+        best_candidate_raw_load_ms = 0.0
+        best_candidate_effective_load_ms = 0.0
+        best_candidate_total_ms = baseline_compute_ms
+
+        for count in range(1, len(candidates) + 1):
+            raw_load_ms = self._read_latency_ms(candidates[:count])
+            effective_load_ms = raw_load_ms * (
+                1.0 - self.config.prefetch_overlap_fraction
+            )
+            total_ms = (
+                effective_load_ms
+                + self._recompute_latency_ms(
+                    start_token=local_hbm_tokens + count * self.block_size,
+                    end_token=len(prompt_token_ids),
+                )
+            )
+            if best_candidate_count == 0 or total_ms < best_candidate_total_ms:
+                best_candidate_count = count
+                best_candidate_total_ms = total_ms
+                best_candidate_raw_load_ms = raw_load_ms
+                best_candidate_effective_load_ms = effective_load_ms
 
         if self.enabled and self.config.prefetch_policy == "always":
             selected_count = len(candidates)
         elif self.enabled and self.config.prefetch_policy == "cost_aware":
-            for count in range(1, len(candidates) + 1):
-                raw_load_ms = self._read_latency_ms(candidates[:count])
-                effective_load_ms = raw_load_ms * (
-                    1.0 - self.config.prefetch_overlap_fraction
-                )
-                total_ms = (
-                    effective_load_ms
-                    + self._recompute_latency_ms(
-                        start_token=local_hbm_tokens + count * self.block_size,
-                        end_token=len(prompt_token_ids),
-                    )
-                )
-                if total_ms < selected_total_ms:
-                    selected_count = count
-                    selected_total_ms = total_ms
-                    selected_raw_load_ms = raw_load_ms
-                    selected_effective_load_ms = effective_load_ms
-            if baseline_compute_ms - selected_total_ms < self.config.min_savings_ms:
-                selected_count = 0
+            if (
+                best_candidate_count > 0
+                and baseline_compute_ms - best_candidate_total_ms
+                >= self.config.min_savings_ms
+            ):
+                selected_count = best_candidate_count
+                selected_raw_load_ms = best_candidate_raw_load_ms
+                selected_effective_load_ms = best_candidate_effective_load_ms
 
         if selected_count and self.config.prefetch_policy == "always":
             selected_raw_load_ms = self._read_latency_ms(candidates[:selected_count])
             selected_effective_load_ms = selected_raw_load_ms * (
                 1.0 - self.config.prefetch_overlap_fraction
             )
-            selected_total_ms = (
-                selected_effective_load_ms
-                + self._recompute_latency_ms(
-                    start_token=local_hbm_tokens
-                    + selected_count * self.block_size,
-                    end_token=len(prompt_token_ids),
-                )
-            )
-
         selected = candidates[:selected_count]
         available_dram_blocks = sum(tier == "dram" for _, tier in candidates)
         available_ssd_blocks = sum(tier == "ssd" for _, tier in candidates)
@@ -422,6 +427,14 @@ class TieredKVCache:
             ssd_blocks=ssd_blocks,
             baseline_recompute_tokens=baseline_tokens,
             selected_recompute_tokens=selected_recompute_tokens,
+            best_candidate_blocks=best_candidate_count,
+            best_candidate_load_latency_ms=best_candidate_effective_load_ms,
+            best_candidate_total_latency_ms=best_candidate_total_ms,
+            best_candidate_savings_ms=(
+                baseline_compute_ms - best_candidate_total_ms
+                if best_candidate_count
+                else 0.0
+            ),
             raw_load_latency_ms=selected_raw_load_ms,
             effective_load_latency_ms=selected_effective_load_ms,
             baseline_recompute_latency_ms=baseline_compute_ms,
