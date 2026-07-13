@@ -71,3 +71,18 @@ PYTHONPATH=hisim/src conda run -n hisim-vllm023 \
 
 这些是未参与拟合的服务端计时结果，只覆盖 batch size 1。早期客户端计时与单点拟合结果也保留
 在 `results/` 中，证明为何需要分离 HTTP 抖动和 engine timing；不能用它们替代最终 v3 结果。
+
+## 完整 Engine/Worker hook 结果
+
+完整 server 自身会引入 EngineCore、IPC、output processing 和 frontend 开销。使用
+`fast_forward` server 在相同训练 workload 上测量这部分空载开销，并通过
+`fit_full_hook_profile.py` 从真实 RTX 4090 指标中扣除，得到
+`rtx4090_qwen3_0.6b_full_engine_worker_profile_v4.json`。
+
+| held-out workload | TTFT MAPE | TPOT MAPE | E2E MAPE | active throughput error | KV hit-rate abs error |
+|---|---:|---:|---:|---:|---:|
+| prefix 96, output 16 | 9.01% | 6.98% | 7.13% | 0.62% | 0.00 |
+| prefix 160, output 24 | 5.21% | 2.45% | 2.59% | 2.69% | 0.00 |
+
+这些结果通过完整 OpenAI server 获得，不是直接调用 standalone scheduler。真实服务和 HiSim
+服务使用完全相同的 prompt token IDs、vLLM Scheduler 配置和 prefix-cache 指标口径。

@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "latency_profile": {
+    "name": "rtx4090-qwen3-0.6b-full-engine-worker-v4",
+    "scheduler_overhead_ms": 0.0,
+    "prefill_base_ms": 12.408296267191568,
+    "prefill_token_ms": 0.0,
+    "decode_base_ms": 5.626188168578127,
+    "decode_token_ms": 0.0,
+    "decode_context_token_ms": 0.0,
+    "calibrated": true
+  },
+  "calibration": {
+    "evaluation_kind": "full_engine_overhead_subtracted_fit",
+    "source_pairs": [
+      {
+        "real": "hisim/experiments/vllm/results/train_grid_p64_o16_server_real.json",
+        "real_sha256": "ac4c443cf74dc6e9352633daa277bb02c64e160605b8a975b3cf9187562f02e1",
+        "overhead": "hisim/experiments/vllm/results/full_hook_overhead_p64_o16.json",
+        "overhead_sha256": "78cce5add3efc4a77f5351458bd90d4f90cc994ca63491b51aa5df6d1a3f9644"
+      },
+      {
+        "real": "hisim/experiments/vllm/results/train_grid_p128_o16_server_real.json",
+        "real_sha256": "265ef47e3e3c624413970cf95a37b00b72dcf71054a439638c9488968d78f7f5",
+        "overhead": "hisim/experiments/vllm/results/full_hook_overhead_p128_o16.json",
+        "overhead_sha256": "67b3f3bfaa7aa7680d068849b2cfcd648cb04419d988deaa2272f77eed10545a"
+      },
+      {
+        "real": "hisim/experiments/vllm/results/train_grid_p192_o16_server_real.json",
+        "real_sha256": "55aa44a7d22925fe3115357b67de0857e7292ec2cd92dd4d0c15d1cab4749918",
+        "overhead": "hisim/experiments/vllm/results/full_hook_overhead_p192_o16.json",
+        "overhead_sha256": "7a5c0c93badbbc7c603c0ca3016d7d07c01b0af17cde7e646436a17d4e5bd6dd"
+      }
+    ],
+    "computed_prompt_tokens": [
+      80,
+      16,
+      80,
+      16,
+      80,
+      16,
+      144,
+      16,
+      144,
+      16,
+      144,
+      16,
+      208,
+      16,
+      208,
+      16,
+      208,
+      16
+    ],
+    "execution_ttft_ms": [
+      20.5843448638916,
+      11.915445327758789,
+      12.091875076293945,
+      11.850595474243164,
+      12.108087539672852,
+      12.397050857543945,
+      14.953851699829102,
+      11.896610260009766,
+      13.394355773925781,
+      11.49129867553711,
+      11.713266372680664,
+      12.177705764770508,
+      14.294862747192383,
+      14.36614990234375,
+      11.467218399047852,
+      11.693000793457031,
+      2.917051315307617,
+      12.036561965942383
+    ],
+    "decode_context_tokens": [
+      87.5,
+      87.5,
+      87.5,
+      87.5,
+      87.5,
+      87.5,
+      151.5,
+      151.5,
+      151.5,
+      151.5,
+      151.5,
+      151.5,
+      215.5,
+      215.5,
+      215.5,
+      215.5,
+      215.5,
+      215.5
+    ],
+    "execution_tpot_ms": [
+      5.363691722353274,
+      5.535527147973581,
+      5.520802875980713,
+      5.495068524032831,
+      5.467436742037528,
+      5.94254340976476,
+      5.668582472329331,
+      5.946280000110493,
+      5.693888136496154,
+      5.654732805366332,
+      6.158465209106623,
+      5.631467932835228,
+      5.555772734805923,
+      5.566644870365682,
+      5.512216066320759,
+      5.500611864651221,
+      5.52331019813818,
+      5.534344321737672
+    ],
+    "request_count": 18,
+    "batch_size": 1
+  }
+}

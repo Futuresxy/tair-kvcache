@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-13",
+  "branch": "hisim-vllm-simulation",
+  "starting_commit": "208194d",
+  "environment": "hisim-vllm023",
+  "vllm_version": "0.23.0",
+  "implementation": {
+    "worker_cls": "hisim.simulation.vllm.worker.HiSimWorker",
+    "offline_factory": "hisim.simulation.vllm.create_hisim_llm",
+    "server_module": "hisim.simulation.vllm.launch_server",
+    "preserved_components": [
+      "OpenAI frontend",
+      "tokenizer and output processor",
+      "EngineCore",
+      "Scheduler",
+      "KVCacheManager and block allocator",
+      "prefix hashing and Prometheus metrics"
+    ],
+    "replaced_components": [
+      "CUDA and NCCL initialization",
+      "model weight loading",
+      "KV tensor allocation",
+      "kernel compilation and warmup",
+      "model forward and sampling"
+    ]
+  },
+  "calibration": {
+    "profile": "rtx4090_qwen3_0.6b_full_engine_worker_profile_v4.json",
+    "training_prefix_tokens": [64, 128, 192],
+    "held_out": {
+      "prefix_96_output_16": {
+        "ttft_mape_percent": 9.005834703616598,
+        "tpot_mape_percent": 6.977487881745437,
+        "e2e_mape_percent": 7.126491847412328,
+        "throughput_error_percent": 0.6199970224594415,
+        "kv_hit_rate_absolute_error": 0.0
+      },
+      "prefix_160_output_24": {
+        "ttft_mape_percent": 5.20871854801256,
+        "tpot_mape_percent": 2.446297936151005,
+        "e2e_mape_percent": 2.590783604220156,
+        "throughput_error_percent": 2.68915064310737,
+        "kv_hit_rate_absolute_error": 0.0
+      }
+    }
+  },
+  "validated_interfaces": [
+    "vllm.LLM.generate",
+    "vllm.LLM.reset_prefix_cache",
+    "/v1/completions",
+    "/v1/chat/completions",
+    "/metrics",
+    "concurrent native scheduler batching",
+    "cold and warm prefix-cache reuse",
+    "instance_id trace isolation"
+  ],
+  "model": {
+    "path": "/home/songxy/workspace/nano-vllm/huggingface/Qwen3-0.6B",
+    "weights_loaded_by_hisim_worker": false,
+    "gpu_kernels_executed_by_hisim_worker": false
+  }
+}
