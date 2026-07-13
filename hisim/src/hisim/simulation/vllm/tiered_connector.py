@@ -16,7 +16,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 )
 from vllm.v1.core.sched.output import SchedulerOutput
 
-from .tiered_cache import (
+from hisim.simulation.tiered_cache import (
     TieredKVCache,
     TieredKVCacheConfig,
     TieredLookupDecision,

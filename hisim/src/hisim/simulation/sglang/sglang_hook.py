@@ -32,6 +32,10 @@ from hisim.simulation.sglang.sglang_mock_class import (
     MockTokenToKVPoolHost,
     MockHiCacheStorage,
 )
+from hisim.simulation.sglang.tiered_adapter import (
+    create_sglang_tiered_cache_backend,
+    load_sglang_tiered_cache_settings,
+)
 from hisim.simulation.utils import (
     calc_metrics,
     estimate_kv_cache_pool_capacity,
@@ -108,6 +112,12 @@ class C_ModelRunnerHook(BaseHook):
             )
 
             assert model is not None and hw is not None and config is not None
+            # The storage adapter is created before Scheduler.__init__ returns,
+            # so publish the resolved model/scheduler metadata here.  The mock
+            # tensors intentionally use a tiny physical shape, while transfer
+            # and capacity accounting must use the real model KV footprint.
+            ConfigManager.set_model_info(model)
+            ConfigManager.set_scheduler_config(config)
 
             if self.server_args.max_total_tokens is not None:
                 self.max_total_num_tokens = self.server_args.max_total_tokens
@@ -167,6 +177,9 @@ class C_ModelRunnerHook(BaseHook):
                 enable_memory_saver=self.server_args.enable_memory_saver,
                 start_layer=self.start_layer,
                 end_layer=self.end_layer,
+            )
+            self.token_to_kv_pool.hisim_kv_bytes_per_token = (
+                ConfigManager.get_kv_cache_bytes()
             )
 
             if self.page_size == 1:
@@ -279,6 +292,8 @@ class C_HiCacheController(BaseHook):
 
     @classmethod
     def hook(cls, target):
+        original_storage_hit_query = target._storage_hit_query
+
         def override_backup_thread_func(self, *args, **kwargs):
             # Async thread: perform no action
             # The action will be performed by `handle_backup_operation`
@@ -306,6 +321,54 @@ class C_HiCacheController(BaseHook):
                 except Empty:
                     return
 
+        def calc_operation_prefetch_progress(
+            self, operation, required_tokens, max_dur
+        ):
+            """Advance a prefetch using the shared mixed-tier cost estimate."""
+
+            decision = getattr(operation, "hisim_tiered_decision", None)
+            if not decision:
+                return C_HiCacheController.calc_prefetch_pages(
+                    required_tokens,
+                    C_HiCacheController.KV_CACHE_BYTES,
+                    max_dur,
+                    C_HiCacheController.DISK_READ_BANDWIDTH_BYTES,
+                )
+
+            total_tokens = int(decision["selected_external_tokens"])
+            total_dur = float(decision["raw_load_latency_ms"]) / 1000.0
+            if total_tokens <= 0 or total_dur <= 0:
+                return int(required_tokens), 0.0
+
+            previous_elapsed = float(
+                getattr(operation, "hisim_tiered_prefetch_elapsed", 0.0)
+            )
+            remaining_dur = max(0.0, total_dur - previous_elapsed)
+            consumed_dur = min(max(0.0, max_dur), remaining_dur)
+            elapsed = min(total_dur, previous_elapsed + consumed_dur)
+            operation.hisim_tiered_prefetch_elapsed = elapsed
+            if elapsed >= total_dur:
+                completed_total = total_tokens
+            else:
+                completed_total = int(total_tokens * elapsed / total_dur)
+                completed_total = (
+                    completed_total // self.page_size * self.page_size
+                )
+            newly_completed = max(
+                0, completed_total - int(operation.completed_tokens)
+            )
+            return min(int(required_tokens), newly_completed), consumed_dur
+
+        def record_prefetch_completion(self, operation):
+            backend = getattr(self, "storage_backend", None)
+            if backend is not None and hasattr(
+                backend, "record_prefetch_completion"
+            ):
+                backend.record_prefetch_completion(
+                    operation.request_id,
+                    int(operation.completed_tokens),
+                )
+
         def handle_prefetch_operation(self):
             if not self.enable_storage:
                 return
@@ -326,13 +389,11 @@ class C_HiCacheController(BaseHook):
             if chunked_prefetch_operation is not None:
                 operation = chunked_prefetch_operation["operation"]
                 storage_hit_count = chunked_prefetch_operation["storage_hit_count"]
-                completed_tokens, prefetch_dur = (
-                    C_HiCacheController.calc_prefetch_pages(
-                        (storage_hit_count - operation.completed_tokens),
-                        C_HiCacheController.KV_CACHE_BYTES,
-                        remain_dur,
-                        C_HiCacheController.DISK_READ_BANDWIDTH_BYTES,
-                    )
+                completed_tokens, prefetch_dur = calc_operation_prefetch_progress(
+                    self,
+                    operation,
+                    storage_hit_count - operation.completed_tokens,
+                    remain_dur,
                 )
                 if completed_tokens < storage_hit_count - operation.completed_tokens:
                     operation.completed_tokens += completed_tokens
@@ -349,6 +410,7 @@ class C_HiCacheController(BaseHook):
                 # update request states
                 req_stats = C_SchedulerHook.REQUEST_STATS[operation.request_id]
                 req_stats.prefetch_complete_tokens = operation.completed_tokens
+                record_prefetch_completion(self, operation)
 
             while remain_dur > 0:
                 try:
@@ -373,13 +435,11 @@ class C_HiCacheController(BaseHook):
                         storage_hit_count // self.page_size * self.page_size
                     )
 
-                    completed_tokens, prefetch_dur = (
-                        C_HiCacheController.calc_prefetch_pages(
-                            storage_hit_count,
-                            C_HiCacheController.KV_CACHE_BYTES,
-                            remain_dur,
-                            C_HiCacheController.DISK_READ_BANDWIDTH_BYTES,
-                        )
+                    completed_tokens, prefetch_dur = calc_operation_prefetch_progress(
+                        self,
+                        operation,
+                        storage_hit_count,
+                        remain_dur,
                     )
                     if completed_tokens < storage_hit_count:
                         # Continue to prefetch data next time.
@@ -403,6 +463,7 @@ class C_HiCacheController(BaseHook):
                     # update request states
                     req_stats = C_SchedulerHook.REQUEST_STATS[operation.request_id]
                     req_stats.prefetch_complete_tokens = operation.completed_tokens
+                    record_prefetch_completion(self, operation)
                     # Release host memory after current operation is finished
                     self.append_host_mem_release(
                         operation.host_indices[storage_hit_count:]
@@ -410,6 +471,25 @@ class C_HiCacheController(BaseHook):
 
                 except Empty:
                     return
+
+        def override_storage_hit_query(self, operation):
+            backend = getattr(self, "storage_backend", None)
+            if backend is None or not hasattr(backend, "plan_prefetch"):
+                return original_storage_hit_query(self, operation)
+
+            last_hash = operation.last_hash
+            hashes = []
+            tokens = operation.token_ids
+            for start in range(0, len(tokens), self.page_size):
+                page_tokens = tokens[start : start + self.page_size]
+                if len(page_tokens) < self.page_size:
+                    break
+                last_hash = self.get_hash_str(page_tokens, last_hash)
+                hashes.append(last_hash)
+            decision = backend.plan_prefetch(operation.request_id, hashes)
+            operation.hisim_tiered_decision = decision.trace_dict()
+            selected_blocks = decision.selected_external_blocks
+            return hashes[:selected_blocks], decision.selected_external_tokens
 
         def override_generic_page_set(
             self, hash_values, host_indices, extra_info=None
@@ -425,6 +505,7 @@ class C_HiCacheController(BaseHook):
         target.backup_thread_func = override_backup_thread_func
         target.handle_backup_operation = handle_backup_operation
         target.handle_prefetch_operation = handle_prefetch_operation
+        target._storage_hit_query = override_storage_hit_query
         target._generic_page_set = override_generic_page_set
 
 
@@ -435,11 +516,25 @@ class C_HiRadixCacheHook(BaseHook):
     @classmethod
     def hook(cls, target):
         original_check_hicache_events = target.check_hicache_events
+        original_match_prefix = target.match_prefix
         original_reset = target.reset
 
         def wrapped_reset(self):
-            if hasattr(self, "cache_controller"):
-                self.cache_controller.handle_backup_operation()
+            cache_controller = getattr(self, "cache_controller", None)
+            has_pending_writes = bool(
+                getattr(self, "ongoing_write_through", None)
+                or getattr(self, "ongoing_backup", None)
+                or (
+                    cache_controller is not None
+                    and hasattr(cache_controller, "backup_queue")
+                    and not cache_controller.backup_queue.empty()
+                )
+            )
+            if has_pending_writes:
+                # First consume completed HBM->DRAM writes, which schedules
+                # storage backups; the second pass commits those backups.
+                self.check_hicache_events()
+                self.check_hicache_events()
             original_reset(self)
 
         def override_init(self, params, server_args):
@@ -544,8 +639,28 @@ class C_HiRadixCacheHook(BaseHook):
             self.cache_controller.handle_prefetch_operation()
             return original_check_hicache_events(self, *args, **kwargs)
 
+        def wrapped_match_prefix(self, *args, **kwargs):
+            result = original_match_prefix(self, *args, **kwargs)
+            backend = getattr(self.cache_controller, "storage_backend", None)
+            if (
+                result.host_hit_length <= 0
+                or backend is None
+                or not hasattr(backend, "lookup_tier")
+            ):
+                return result
+
+            # In tiered mode the native host pool is only a transport staging
+            # buffer.  Logical DRAM and SSD placement/capacity are both owned
+            # by the shared core, so all off-HBM hits must pass through its
+            # retrieve-versus-recompute decision.
+            return result._replace(
+                last_host_node=result.last_device_node,
+                host_hit_length=0,
+            )
+
         target.__init__ = override_init
         target.check_hicache_events = wrapped_check_hicache_events
+        target.match_prefix = wrapped_match_prefix
         target.reset = wrapped_reset
 
 
@@ -557,6 +672,26 @@ class C_StorageBackendFactory(BaseHook):
     def hook(cls, target):
         def override_create_backend(cls, *args, **kwargs):
             logger.info("Creating hijacked cache storage backend.")
+            storage_config = kwargs.get("storage_config")
+            mem_pool_host = kwargs.get("mem_pool_host")
+            # The original method is a classmethod, but replacing it after
+            # class creation installs a plain descriptor.  Using the trailing
+            # arguments supports both binding forms across SGLang versions.
+            if storage_config is None and len(args) >= 2:
+                storage_config = args[-2]
+            if mem_pool_host is None and len(args) >= 1:
+                mem_pool_host = args[-1]
+            tiered_backend = create_sglang_tiered_cache_backend(
+                storage_config=storage_config,
+                mem_pool_host=mem_pool_host,
+            )
+            if tiered_backend is not None:
+                logger.info(
+                    "Using shared HiSim HBM/DRAM/SSD policy for SGLang "
+                    "instance_id=%s",
+                    tiered_backend.instance_id,
+                )
+                return tiered_backend
             return MockHiCacheStorage()
 
         target.create_backend = override_create_backend
@@ -592,6 +727,7 @@ class C_SchedulerHook(BaseHook):
         original_run_batch = target.run_batch
         original_process_batch_result = target.process_batch_result
         original_event_loop_normal = target.event_loop_normal
+        original_prefetch_kvcache = target._prefetch_kvcache
 
         def override_event_loop_overlap(self, *args, **kwargs):
             # To reduce the complexity of the simulation, the overlapping schedule is not needed.
@@ -602,6 +738,17 @@ class C_SchedulerHook(BaseHook):
             server_args = get_obj_from_args(
                 "sglang.srt.server_args.ServerArgs", *args, **kwargs
             )
+            tiered_settings = load_sglang_tiered_cache_settings()
+            if tiered_settings is not None:
+                # SGLang owns HBM/host mechanics; the shared policy chooses the
+                # same eviction order and supplies bounded external storage.
+                server_args.enable_hierarchical_cache = True
+                server_args.hicache_storage_backend = (
+                    server_args.hicache_storage_backend or "file"
+                )
+                server_args.radix_eviction_policy = (
+                    tiered_settings.config.eviction_policy
+                )
             C_SchedulerHook.OVERLAP_SCHEDULE = not getattr(
                 server_args, "disable_overlap_schedule", False
             )
@@ -633,6 +780,38 @@ class C_SchedulerHook(BaseHook):
                     f"Failed to initialize inference time predictor. Error: {e}"
                 )
                 raise e
+
+        def wrapped_prefetch_kvcache(self, req):
+            result = original_prefetch_kvcache(self, req)
+            cache_controller = getattr(self.tree_cache, "cache_controller", None)
+            backend = getattr(cache_controller, "storage_backend", None)
+            if backend is None or not hasattr(backend, "register_request_context"):
+                return result
+
+            local_hbm_tokens = len(req.prefix_indices)
+            local_dram_tokens = int(req.host_hit_length)
+            backend.register_request_context(
+                req.rid,
+                local_hbm_tokens=local_hbm_tokens,
+                local_dram_tokens=local_dram_tokens,
+                prompt_tokens=len(req.fill_ids),
+            )
+
+            # Refresh write-through copies on a local hit so LRU semantics are
+            # identical whether the hit was served by HBM, host DRAM, or SSD.
+            resident_tokens = local_hbm_tokens + local_dram_tokens
+            resident_tokens = (
+                resident_tokens // self.tree_cache.page_size
+                * self.tree_cache.page_size
+            )
+            hashes = []
+            last_hash = None
+            for start in range(0, resident_tokens, self.tree_cache.page_size):
+                page = req.fill_ids[start : start + self.tree_cache.page_size]
+                last_hash = cache_controller.get_hash_str(page, last_hash)
+                hashes.append(last_hash)
+            backend.touch_resident_blocks(hashes)
+            return result
 
         def wrapped_recv_requests(self, *args, **kwargs) -> list:
             recv_reqs = []
@@ -865,9 +1044,11 @@ class C_SchedulerHook(BaseHook):
                         )
                     )
                     StateManager.step_global_clock(current_inference_dur)
-                    request_response_time = (
-                        StateManager.get_global_clock() + hicache_l2_backup_dur
-                    )
+                    # Write-through backup is asynchronous in overlap mode and
+                    # must not move a token's response timestamp ahead of the
+                    # global clock.  Doing so makes the following decode ITL
+                    # negative when its compute is shorter than the backup.
+                    request_response_time = StateManager.get_global_clock()
                 else:
                     StateManager.step_global_clock(
                         hicache_l2_load_dur
@@ -900,6 +1081,14 @@ class C_SchedulerHook(BaseHook):
             return ret
 
         def wrapped_profile(self, req, *args, **kwargs):
+            if hasattr(self.tree_cache, "cache_controller") and hasattr(
+                self.tree_cache, "check_hicache_events"
+            ):
+                # Drain the two-stage HBM->DRAM->storage write-through path so
+                # a cold run is visible to the following warm replay and to
+                # the snapshot emitted below.
+                self.tree_cache.check_hicache_events()
+                self.tree_cache.check_hicache_events()
             stats: list[RequestStats] = []
             for item in C_SchedulerHook.REQUEST_STATS.values():
                 if item.rid is not None and item.input_length > 0:
@@ -927,6 +1116,12 @@ class C_SchedulerHook(BaseHook):
 
                 metrics = calc_metrics(metrics_stats)
                 metrics["time_cost"] = time.time() - C_SchedulerHook.LAST_FLUSH_TS
+                cache_controller = getattr(self.tree_cache, "cache_controller", None)
+                storage_backend = getattr(cache_controller, "storage_backend", None)
+                if storage_backend is not None and hasattr(
+                    storage_backend, "snapshot"
+                ):
+                    metrics["tiered_kv_cache"] = storage_backend.snapshot()
 
                 try:
                     with open(f"{output_dir}/metrics.json", "w") as f:
@@ -967,6 +1162,7 @@ class C_SchedulerHook(BaseHook):
 
         target.event_loop_overlap = override_event_loop_overlap
         target.__init__ = wrapped_init
+        target._prefetch_kvcache = wrapped_prefetch_kvcache
         target.recv_requests = wrapped_recv_requests
         target.get_new_batch_prefill = wrapped_get_new_batch_prefill
         target.run_batch = wrapped_run_batch

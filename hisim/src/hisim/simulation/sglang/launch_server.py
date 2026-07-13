@@ -2,27 +2,12 @@ import os
 import json
 import sys
 import argparse
-import torch
-import hisim.hook as hisim_hook
-from hisim.simulation.sglang import sgl_kernel_hook, sglang_hook
+from hisim.simulation.sglang.bootstrap import patch_sglang_process_entrypoints
 from hisim.simulation.sim_args import SimulationArgs
 from hisim.utils import get_logger
 
 
-# hook the sglang implementation
-if not torch.cuda.is_available():
-    # CPU Platform
-    hisim_hook.install_module_hooks([sgl_kernel_hook.M_SGLangKernelLoadUtilHook])
-hisim_hook.install_class_hooks(
-    [
-        sglang_hook.C_SchedulerHook,
-        sglang_hook.C_ModelRunnerHook,
-        sglang_hook.C_TokenizerManagerHook,
-        sglang_hook.C_StorageBackendFactory,
-        sglang_hook.C_HiCacheController,
-        sglang_hook.C_HiRadixCacheHook,
-    ]
-)
+patch_sglang_process_entrypoints()
 
 
 logger = get_logger("hisim")

@@ -1,0 +1,62 @@
+{
+  "platform": {
+    "accelerator": {
+      "name": "NVIDIA GeForce RTX 4090",
+      "vendor": "NVIDIA",
+      "hbm_capacity_gb": 24,
+      "hbm_bandwidth_gb": 1008,
+      "intra_node_bandwidth_gb": 64,
+      "inter_node_bandwidth_gb": 32,
+      "device_alias": ["RTX4090", "RTX_4090", "GeForce RTX 4090"],
+      "tflops": {
+        "INT8_TENSOR": 661,
+        "FP16_TENSOR": 165,
+        "BF16_TENSOR": 165,
+        "FP32": 82.6
+      },
+      "ref": "https://www.nvidia.com/en-us/geforce/graphics-cards/40-series/rtx-4090/"
+    },
+    "disk_capacity_gb": 512,
+    "disk_read_bandwidth_gb": 5.413,
+    "disk_write_bandwidth_gb": 6.015,
+    "memory_capacity_gb": 64,
+    "memory_read_bandwidth_gb": 6.73,
+    "memory_write_bandwidth_gb": 6.596,
+    "num_device_per_node": 1
+  },
+  "predictor": {
+    "name": "aiconfigurator",
+    "device_name": "h100_sxm"
+  },
+  "scheduler": {
+    "tp_size": 1,
+    "ep_size": 1,
+    "dp_size": 1,
+    "data_type": "FP16",
+    "kv_cache_data_type": "FP16",
+    "backend_version": "0.5.6.post2"
+  },
+  "tiered_kv_cache": {
+    "enabled": true,
+    "instance_id": "sglang-rtx4090-replica-0",
+    "dram_capacity_blocks": 32,
+    "ssd_capacity_blocks": 512,
+    "eviction_policy": "lru",
+    "prefetch_policy": "cost_aware",
+    "write_policy": "write_through",
+    "recompute_ms_per_token": 0.0007583432279927563,
+    "recompute_ms_per_token_squared": 1.3716009947561647e-06,
+    "dram_read_bandwidth_gbps": 6.7298736429285,
+    "dram_write_bandwidth_gbps": 6.595627123629741,
+    "ssd_read_bandwidth_gbps": 2.9998794992768127,
+    "ssd_write_bandwidth_gbps": 6.015421146,
+    "dram_read_latency_ms": 0.0,
+    "ssd_read_latency_ms": 0.08,
+    "prefetch_overlap_fraction": 0.5,
+    "write_overlap_fraction": 1.0,
+    "metrics_path": "/tmp/hisim/sglang-tiered/metrics.json",
+    "decision_trace_path": "/tmp/hisim/sglang-tiered/decisions.jsonl",
+    "ssd_state_path": "/tmp/hisim/sglang-tiered/ssd-state.json",
+    "reset_on_start": true
+  }
+}

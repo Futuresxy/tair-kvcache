@@ -15,7 +15,7 @@
 | 部分 | 路径 | 说明 |
 |---|---|---|
 | **KVCache Manager** | `kv_cache_manager/` | 核心系统：全局 KVCache 元数据管理服务，以及配套的客户端 SDK 与推理框架连接器。本文档的主体。 |
-| **HiSim** | `hisim/` | 独立的 LLM 推理仿真系统，通过回放 trace 预测 TTFT/TPOT/吞吐等指标，不依赖 Manager 运行时。 |
+| **HiSim** | `hisim/` | 独立的 LLM 推理仿真系统，通过回放 trace 预测 TTFT/TPOT/吞吐等指标；vLLM 0.23 与 SGLang 0.5.6.post2 的适配器复用同一 HBM/DRAM/SSD 策略核心，不依赖 Manager 运行时。 |
 | **Optimizer** | `kv_cache_manager/optimizer/` | 缓存仿真与优化：回放 KVCache 访问 trace，模拟命中率与容量消耗，指导逐出策略与容量参数调优。在线化能力正在开发中，后续会与现有 optimizer 合并。 |
 
 KVCache Manager 采用中心化部署，负责 KVCache 的全局元数据管理（查询、写入、容量管理），推理引擎通过 Client/Connector 接入。
@@ -99,7 +99,20 @@ service → manager → meta → config → data_storage → common
 - **client** 是独立的对外分支，仅共享 `common`、`config`、`data_storage`、`protocol` 以及 `service/util:manager_message_proto_util`；**py_connector** 通过 pybind 位于 client 之上。核心服务端不依赖 client。运行时，元数据面经 gRPC（C++ `MetaClient`）或 HTTP（py_connector 的 Python `KvCacheManagerClient`）调用 KVCM 服务，数据面经 C++ `TransferClient` 直接读写存储后端——这几条链路是理解端到端流程的关键（见第 4 节）。
 - **optimizer** 负责 KVCache 访问 trace 的仿真与优化（命中率/容量分析、逐出与容量参数调优）。目前通过 `meta:cache_location` 类型与 `event` 的 optimizer 事件与核心关联；在线化能力正在开发中，后续会与现有 optimizer 合并。
 
-### 3.4 模块关系图
+### 3.4 HiSim 框架适配与共享多级缓存
+
+HiSim 保留推理框架的调度与 KV block/page 控制流，只替换模型执行并注入性能模型。框架适配器
+位于 `hisim/src/hisim/simulation/vllm/` 和 `hisim/src/hisim/simulation/sglang/`；二者共同依赖
+`hisim/src/hisim/simulation/tiered_cache.py`，后者统一负责 DRAM/SSD 容量、LRU/FIFO、连续前缀、
+提升/降级、持久化、预取成本和读取与重计算决策。
+
+vLLM 通过 0.23 的 KVConnector/SchedulerOutput 适配；SGLang 通过固定 0.5.6.post2 的
+HiRadixCache/HiCacheController/storage backend 适配。SGLang native host pool 在共享策略模式下仅作
+传输暂存，不能绕过逻辑 DRAM/SSD 容量。两条路径都把 `instance_id` 写入 cache namespace，禁止
+跨 Instance 复用。详细设计见 `hisim/docs/vllm_023_integration.md` 和
+`hisim/docs/sglang_tiered_cache.md`。
+
+### 3.5 模块关系图
 
 ```mermaid
 flowchart TD
@@ -133,6 +146,12 @@ flowchart TD
 
     optimizer["optimizer（仿真与优化）"]
 
+    subgraph hisim["HiSim（独立仿真分支）"]
+        hisim_adapters["vLLM 0.23 / SGLang 0.5.6 适配器"]
+        hisim_tiered["共享 tiered_cache<br/>容量 · LRU/FIFO · 成本决策"]
+        hisim_adapters --> hisim_tiered
+    end
+
     %% 核心下降链（控制流）
     main --> service --> manager --> meta --> config --> data_storage --> common
 
@@ -164,6 +183,8 @@ flowchart TD
     %% optimizer 的关联
     optimizer -. cache_location 类型 .-> meta
     optimizer --> common
+
+    %% HiSim 子图无外连边：不依赖 Manager 运行时
 
     %% 底层通用模块被广泛依赖
     meta --> common

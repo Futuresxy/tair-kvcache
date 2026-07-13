@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "validation_scope": "SGLang Engine control-flow and tiered-policy functional validation",
+  "framework_version": "0.5.6.post2",
+  "model": "Qwen3-0.6B",
+  "prompt_tokens": 256,
+  "output_tokens": 2,
+  "page_size": 1,
+  "kv_bytes_per_page": 114688,
+  "cold_store": {
+    "stored_blocks": 256,
+    "dram_used_blocks": 32,
+    "ssd_used_blocks": 224
+  },
+  "simulated_latency_ms": {
+    "ttft": 2.378594797716285,
+    "tpot": 1.6073286516025822,
+    "e2e": 3.9859234493188676
+  },
+  "always": {
+    "decision": "cache",
+    "available_dram_blocks": 31,
+    "available_ssd_blocks": 224,
+    "selected_external_tokens": 255,
+    "raw_load_latency_ms": 9.872106354852491,
+    "baseline_recompute_latency_ms": 0.2840251091584856,
+    "completed_prefetch_tokens": 83,
+    "prefetch_completion_rate": 0.3254901960784314,
+    "disk_prefetch_ratio": 0.32421875,
+    "runtime_actual_hit_rate": 0.1627450980392157,
+    "runtime_ssd_hit_tokens": 83
+  },
+  "cost_aware": {
+    "decision": "recompute",
+    "available_dram_blocks": 31,
+    "available_ssd_blocks": 224,
+    "best_candidate_blocks": 1,
+    "best_candidate_load_latency_ms": 0.10864826660853749,
+    "best_candidate_savings_ms": -0.10788855177954998,
+    "selected_external_tokens": 0,
+    "selected_recompute_tokens": 256,
+    "completed_prefetch_tokens": 0,
+    "runtime_actual_hit_rate": 0.0
+  },
+  "calibration_status": "functional-only",
+  "calibration_note": "The example uses an H100 AIConfigurator database as an explicit predictor proxy; do not cite TTFT/TPOT accuracy from this artifact."
+}

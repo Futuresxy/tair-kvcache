@@ -78,7 +78,9 @@ PYTHONPATH=hisim/src conda run -n hisim-vllm023 env \
 
 ### HBM/DRAM/SSD 多级 KVCache
 
-完整 vLLM backend 支持可选的三级缓存：
+完整 vLLM backend 支持可选的三级缓存。容量、LRU/FIFO、提升/降级、成本模型与指标实现在
+框架无关的 `hisim.simulation.tiered_cache`，SGLang 0.5.6.post2 也复用同一核心；框架目录只保留
+各自的 Scheduler/Connector/HiCache 协议适配：
 
 1. HBM 仍由原生 vLLM `KVCacheManager`、block allocator 和 prefix hasher 管理；
 2. `HiSimTieredKVConnector` 通过 vLLM 0.23 的 `KVConnectorBase_V1` 查询 DRAM/SSD；
@@ -221,7 +223,8 @@ runner.shutdown()
 | 框架原生 metrics | SGLang metrics | vLLM Prometheus metrics + Worker trace |
 | 无 GPU/权重运行 | 支持 | 支持，不分配真实 KV tensor |
 | HBM/DRAM/SSD 分层缓存 | HiCache | vLLM KVConnector + HiSim tier model |
-| LRU/FIFO 与 cost-aware 重算决策 | 部分支持 | 支持并输出逐请求决策 trace |
+| LRU/FIFO 与 cost-aware 重算决策 | 支持，共享 tier core + 逐请求 trace | 支持，共享 tier core + 逐请求 trace |
+| 部分异步预取的实际命中 | `runtime_metrics` 区分计划与完成 | Connector 命中直接进入原生 Scheduler |
 
 ## 校准闭环
 

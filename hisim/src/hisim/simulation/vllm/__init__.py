@@ -15,7 +15,7 @@ from .scheduler_simulator import (
 )
 from .benchmark_runner import VllmBenchmarkRunner
 from .engine import create_hisim_llm
-from .tiered_cache import TieredKVCache, TieredKVCacheConfig
+from hisim.simulation.tiered_cache import TieredKVCache, TieredKVCacheConfig
 
 __all__ = [
     "COMPATIBLE_VLLM_VERSIONS",

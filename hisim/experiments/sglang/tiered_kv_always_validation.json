@@ -1,0 +1,20 @@
+{
+  "enabled": true,
+  "instance_id": "sglang-tiered-validation",
+  "dram_capacity_blocks": 32,
+  "ssd_capacity_blocks": 512,
+  "eviction_policy": "lru",
+  "prefetch_policy": "always",
+  "write_policy": "write_through",
+  "recompute_ms_per_token": 0.0007583432279927563,
+  "recompute_ms_per_token_squared": 1.3716009947561647e-06,
+  "dram_read_bandwidth_gbps": 6.7298736429285,
+  "dram_write_bandwidth_gbps": 6.595627123629741,
+  "ssd_read_bandwidth_gbps": 2.9998794992768127,
+  "ssd_write_bandwidth_gbps": 6.015421146,
+  "prefetch_overlap_fraction": 0.0,
+  "metrics_path": "/tmp/hisim/sglang-tiered-validation/metrics.json",
+  "decision_trace_path": "/tmp/hisim/sglang-tiered-validation/decisions.jsonl",
+  "ssd_state_path": "/tmp/hisim/sglang-tiered-validation/ssd-state.json",
+  "reset_on_start": true
+}

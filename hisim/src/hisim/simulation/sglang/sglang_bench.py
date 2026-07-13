@@ -4,14 +4,11 @@ import json
 import os
 from typing import Iterator, Optional
 import numpy as np
-import torch
 
 from hisim.utils.logger import get_logger
 
-import hisim.hook as hisim_hook
-from hisim.simulation.sglang import sgl_kernel_hook
-from hisim.simulation.sglang import sglang_hook
 from hisim.simulation.base.runner import BaseBenchmarkRunner
+from hisim.simulation.sglang.bootstrap import patch_sglang_process_entrypoints
 from hisim.simulation.types import BenchmarkConfig
 from hisim.dataset import (
     DatasetArgs,
@@ -20,20 +17,9 @@ from hisim.dataset import (
     BaseDataset,
 )
 
-# hook the sglang implementation
-if not torch.cuda.is_available():
-    # CPU Platform
-    hisim_hook.install_module_hooks([sgl_kernel_hook.M_SGLangKernelLoadUtilHook])
-hisim_hook.install_class_hooks(
-    [
-        sglang_hook.C_SchedulerHook,
-        sglang_hook.C_ModelRunnerHook,
-        sglang_hook.C_TokenizerManagerHook,
-        sglang_hook.C_StorageBackendFactory,
-        sglang_hook.C_HiCacheController,
-        sglang_hook.C_HiRadixCacheHook,
-    ]
-)
+# SGLang forces the ``spawn`` multiprocessing method.  Patch its process
+# targets so Scheduler children install the same hooks as this parent process.
+patch_sglang_process_entrypoints()
 
 HISIM_OUTPUT_DIR = "/tmp/hisim/simulation"
 HISIM_METRICS_PATH = f"{HISIM_OUTPUT_DIR}/metrics.json"
@@ -161,7 +147,7 @@ class SGLangBenchmarkRunner(BaseBenchmarkRunner):
 
         if os.path.exists(HISIM_METRICS_PATH):
             with open(HISIM_METRICS_PATH, "r") as f:
-                metrics = json.loads(f.readline())
+                metrics = json.load(f)
         else:
             logger.error(
                 f"Failed to load metrics from serving backend. The metrics file should be loaded from {HISIM_METRICS_PATH}."

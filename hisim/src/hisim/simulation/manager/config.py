@@ -46,8 +46,13 @@ class ConfigManager:
         with open(Envs.config_path()) as f:
             config: dict = json.load(f)
         platform_config = config.get("platform", {})
-        device_name = platform_config.get("accelerator", {}).get("name")
+        accelerator_config = platform_config.get("accelerator", {})
+        device_name = accelerator_config.get("name")
         hw = AcceleratorInfo.find_by_hw_name(device_name)
+        if hw is None and len(accelerator_config) > 1:
+            # Portable experiment configs may describe an accelerator inline
+            # instead of requiring a global registry edit.
+            hw = AcceleratorInfo.from_config(accelerator_config)
         if hw is None:
             logger.error(
                 f"Failed to initialize device info with {device_name}. All available devices are: {AcceleratorInfo.list_all_hws().keys()}"
@@ -95,7 +100,7 @@ class ConfigManager:
             calc_kv_cache_cell_elems(
                 model, scheduler_config.tp_size, scheduler_config.pp_size
             )
-            * scheduler_config.data_type.bytes
+            * scheduler_config.kv_cache_data_type.bytes
         )
 
     @classmethod
@@ -106,7 +111,7 @@ class ConfigManager:
             calc_kv_cache_per_layer_elems(
                 model, scheduler_config.tp_size, scheduler_config.pp_size
             )
-            * scheduler_config.data_type.bytes
+            * scheduler_config.kv_cache_data_type.bytes
         )
 
     @classmethod

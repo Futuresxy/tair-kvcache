@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-13T14:58:00+08:00",
+  "branch": "hisim-vllm-simulation",
+  "base_commit": "8a32ec0",
+  "conda_environment": "hisim",
+  "platform": "linux-64",
+  "python": "3.10.20",
+  "packages": {
+    "sglang": "0.5.6.post2",
+    "torch": "2.9.1",
+    "transformers": "4.57.1",
+    "numpy": "1.26.4",
+    "pydantic": "2.13.4"
+  },
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 4090",
+    "memory_mib": 49140,
+    "driver": "590.48.01"
+  },
+  "local_model_used": "Qwen3-0.6B",
+  "network_downloads": false
+}
