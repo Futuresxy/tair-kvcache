@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "experiment": "hisim-tier-io-calibration",
+  "created_at": "2026-07-13T03:19:27.706590+00:00",
+  "environment": {
+    "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.39",
+    "torch": "2.11.0+cu130",
+    "torch_cuda": "13.0",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "ssd_directory": "/tmp",
+    "fio": "fio-3.36",
+    "numa_policy": "policy: bind\npreferred node: 1\nphyscpubind: 12 13 14 15 16 17 18 19 20 21 22 23 108 109 110 111 112 113 114 115 116 117 118 119 \ncpubind: 1 \nnodebind: 1 \nmembind: 1 \npreferred: 1",
+    "ssd_mount": "SOURCE                            FSTYPE TARGET\n/dev/mapper/ubuntu--vg-ubuntu--lv ext4   /",
+    "nvidia_smi": "NVIDIA GeForce RTX 4090, GPU-e696a8ed-a887-59b2-5fab-7179ff99df74, 590.48.01, 49140 MiB"
+  },
+  "config": {
+    "copy_sizes_mib": [
+      16,
+      64,
+      128
+    ],
+    "copy_repeats": 9,
+    "ssd_size_gib": 4,
+    "ssd_runtime_seconds": 5,
+    "kv_block_kib": 1792
+  },
+  "hbm_dram": {
+    "h2d_samples": [
+      {
+        "size_mib": 16,
+        "bytes": 16777216,
+        "latencies_ms": [
+          2.501024007797241,
+          2.497663974761963,
+          2.4962239265441895,
+          2.496095895767212,
+          2.4948160648345947,
+          2.4944639205932617,
+          2.494080066680908,
+          2.4944000244140625,
+          2.49401593208313
+        ],
+        "median_latency_ms": 2.4948160648345947,
+        "median_bandwidth_gbps": 6.724830834818407
+      },
+      {
+        "size_mib": 64,
+        "bytes": 67108864,
+        "latencies_ms": [
+          9.96451187133789,
+          9.962719917297363,
+          9.95910358428955,
+          9.957088470458984,
+          9.957280158996582,
+          9.957663536071777,
+          9.978879928588867,
+          9.982080459594727,
+          9.977919578552246
+        ],
+        "median_latency_ms": 9.962719917297363,
+        "median_bandwidth_gbps": 6.7359982572113655
+      },
+      {
+        "size_mib": 128,
+        "bytes": 134217728,
+        "latencies_ms": [
+          19.960447311401367,
+          19.95235252380371,
+          19.940927505493164,
+          19.941280364990234,
+          19.946847915649414,
+          19.95599937438965,
+          19.933664321899414,
+          19.944448471069336,
+          19.940160751342773
+        ],
+        "median_latency_ms": 19.944448471069336,
+        "median_bandwidth_gbps": 6.729578318231821
+      }
+    ],
+    "h2d_fit": {
+      "fixed_latency_ms": 0.0,
+      "bandwidth_gbps": 6.7298736429285
+    },
+    "d2h_samples": [
+      {
+        "size_mib": 16,
+        "bytes": 16777216,
+        "latencies_ms": [
+          2.564255952835083,
+          2.558624029159546,
+          2.556191921234131,
+          2.5539839267730713,
+          2.554176092147827,
+          2.5519680976867676,
+          2.5502400398254395,
+          2.549504041671753,
+          2.54803204536438
+        ],
+        "median_latency_ms": 2.5539839267730713,
+        "median_bandwidth_gbps": 6.569037425853269
+      },
+      {
+        "size_mib": 64,
+        "bytes": 67108864,
+        "latencies_ms": [
+          10.183391571044922,
+          10.182368278503418,
+          10.184160232543945,
+          10.18620777130127,
+          10.18387222290039,
+          10.183135986328125,
+          10.183967590332031,
+          10.181440353393555,
+          10.18124771118164
+        ],
+        "median_latency_ms": 10.183391571044922,
+        "median_bandwidth_gbps": 6.590030790018411
+      },
+      {
+        "size_mib": 128,
+        "bytes": 134217728,
+        "latencies_ms": [
+          20.358240127563477,
+          20.359647750854492,
+          20.367904663085938,
+          20.356544494628906,
+          20.36944007873535,
+          20.360383987426758,
+          20.358047485351562,
+          20.356159210205078,
+          20.361215591430664
+        ],
+        "median_latency_ms": 20.359647750854492,
+        "median_bandwidth_gbps": 6.592340380464927
+      }
+    ],
+    "d2h_fit": {
+      "fixed_latency_ms": 0.009694112313760892,
+      "bandwidth_gbps": 6.595627123629741
+    }
+  },
+  "ssd": {
+    "read": {
+      "bandwidth_gbps": 5.412558089,
+      "iops": 2949.610078,
+      "io_bytes": 27068203008,
+      "runtime_ms": 5001,
+      "mean_completion_latency_ms": 0.280019164735,
+      "p50_completion_latency_ms": 0.272384,
+      "p99_completion_latency_ms": 0.305152
+    },
+    "write": {
+      "bandwidth_gbps": 6.015421146,
+      "iops": 3278.144371,
+      "io_bytes": 30083121152,
+      "runtime_ms": 5001,
+      "mean_completion_latency_ms": 0.241048901427,
+      "p50_completion_latency_ms": 0.2304,
+      "p99_completion_latency_ms": 0.288768
+    },
+    "read_command": [
+      "fio",
+      "--name=hisim-tier-read",
+      "--filename=/tmp/hisim-tier-io-x6omnepx",
+      "--size=4G",
+      "--bs=1792k",
+      "--rw=read",
+      "--direct=1",
+      "--ioengine=libaio",
+      "--iodepth=1",
+      "--numjobs=1",
+      "--runtime=5",
+      "--time_based=1",
+      "--group_reporting=1",
+      "--output-format=json"
+    ],
+    "write_command": [
+      "fio",
+      "--name=hisim-tier-write",
+      "--filename=/tmp/hisim-tier-io-x6omnepx",
+      "--size=4G",
+      "--bs=1792k",
+      "--rw=write",
+      "--direct=1",
+      "--ioengine=libaio",
+      "--iodepth=1",
+      "--numjobs=1",
+      "--runtime=5",
+      "--time_based=1",
+      "--group_reporting=1",
+      "--output-format=json"
+    ]
+  },
+  "derived": {
+    "ssd_to_hbm_serial_bandwidth_gbps": 2.9998794992768127,
+    "hbm_to_ssd_serial_bandwidth_gbps": 3.146088574267139
+  }
+}

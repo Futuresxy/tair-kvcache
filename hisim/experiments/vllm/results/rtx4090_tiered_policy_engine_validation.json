@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "experiment": "rtx4090-calibrated-tiered-policy-engine-validation",
+  "date": "2026-07-13",
+  "vllm_version": "0.23.0",
+  "model": "Qwen3-0.6B",
+  "backend": "native-vllm-offline-engine-with-hisim-worker",
+  "execution_mode": "fast_forward",
+  "context_tokens": 8064,
+  "output_tokens": 2,
+  "hbm_capacity_blocks": 512,
+  "dram_capacity_blocks": 1024,
+  "ssd_capacity_blocks": 0,
+  "source_config": {
+    "path": "hisim/experiments/vllm/rtx4090_qwen3_0.6b_tiered_kv_calibrated.json",
+    "sha256": "ac10ca868ea5be3e8f8892e12c004d40a770c6b405d0b05d8876d953b93101ec"
+  },
+  "scenarios": [
+    {
+      "prefetch_overlap_fraction": 0.0,
+      "decision": "recompute",
+      "local_hbm_tokens": 96,
+      "available_dram_blocks": 497,
+      "selected_external_tokens": 0,
+      "reload_cached_tokens": 96,
+      "baseline_recompute_latency_ms": 95.22243932657798,
+      "best_candidate_blocks": 1,
+      "best_candidate_total_latency_ms": 95.47840718742614,
+      "best_candidate_savings_ms": -0.25596786084815903
+    },
+    {
+      "prefetch_overlap_fraction": 0.5,
+      "decision": "cache",
+      "local_hbm_tokens": 96,
+      "available_dram_blocks": 497,
+      "selected_external_blocks": 497,
+      "selected_external_tokens": 7952,
+      "reload_cached_tokens": 8048,
+      "raw_load_latency_ms": 135.515022181478,
+      "effective_load_latency_ms": 67.757511090739,
+      "selected_recompute_latency_ms": 0.36572125528806526,
+      "estimated_savings_ms": 27.099206980550917
+    }
+  ],
+  "conclusion": "The native vLLM scheduler follows the calibrated cost decision: recompute without overlap, but load 7952 DRAM tokens when 50 percent of transfer time is hidden."
+}

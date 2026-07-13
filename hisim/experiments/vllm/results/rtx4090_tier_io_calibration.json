@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "experiment": "hisim-tier-io-calibration",
+  "created_at": "2026-07-13T03:12:06.174538+00:00",
+  "environment": {
+    "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.39",
+    "torch": "2.11.0+cu130",
+    "torch_cuda": "13.0",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "ssd_directory": "/tmp"
+  },
+  "config": {
+    "copy_sizes_mib": [
+      64,
+      256,
+      512
+    ],
+    "copy_repeats": 7,
+    "ssd_size_gib": 4,
+    "ssd_runtime_seconds": 5,
+    "kv_block_kib": 1792
+  },
+  "hbm_dram": {
+    "h2d_samples": [
+      {
+        "size_mib": 64,
+        "bytes": 67108864,
+        "latencies_ms": [
+          10.01801586151123,
+          9.980031967163086,
+          9.99232006072998,
+          9.964703559875488,
+          9.964096069335938,
+          9.996352195739746,
+          9.96236801147461
+        ],
+        "median_latency_ms": 9.980031967163086,
+        "median_bandwidth_gbps": 6.72431353133995
+      },
+      {
+        "size_mib": 256,
+        "bytes": 268435456,
+        "latencies_ms": [
+          39.86598587036133,
+          39.866111755371094,
+          39.8645133972168,
+          39.90982437133789,
+          39.8837776184082,
+          39.8908805847168,
+          39.88479995727539
+        ],
+        "median_latency_ms": 39.8837776184082,
+        "median_bandwidth_gbps": 6.730442100251423
+      },
+      {
+        "size_mib": 512,
+        "bytes": 536870912,
+        "latencies_ms": [
+          79.7375717163086,
+          79.65430450439453,
+          79.67766571044922,
+          79.72796630859375,
+          79.68284606933594,
+          79.66790771484375,
+          79.665283203125
+        ],
+        "median_latency_ms": 79.67766571044922,
+        "median_bandwidth_gbps": 6.7380351471515665
+      }
+    ],
+    "h2d_fit": {
+      "fixed_latency_ms": 0.03628936973776816,
+      "bandwidth_gbps": 6.740304865688615
+    },
+    "d2h_samples": [
+      {
+        "size_mib": 64,
+        "bytes": 67108864,
+        "latencies_ms": [
+          10.193568229675293,
+          10.182720184326172,
+          10.182047843933105,
+          10.180447578430176,
+          10.175711631774902,
+          10.174367904663086,
+          10.172351837158203
+        ],
+        "median_latency_ms": 10.180447578430176,
+        "median_bandwidth_gbps": 6.591936502103002
+      },
+      {
+        "size_mib": 256,
+        "bytes": 268435456,
+        "latencies_ms": [
+          40.66169738769531,
+          40.66876983642578,
+          40.67359924316406,
+          40.66886520385742,
+          40.667198181152344,
+          40.66729736328125,
+          40.66864013671875
+        ],
+        "median_latency_ms": 40.66864013671875,
+        "median_bandwidth_gbps": 6.6005515576026355
+      },
+      {
+        "size_mib": 512,
+        "bytes": 536870912,
+        "latencies_ms": [
+          81.34780883789062,
+          81.33926391601562,
+          81.36224365234375,
+          81.35145568847656,
+          81.35254669189453,
+          81.3416976928711,
+          81.37264251708984
+        ],
+        "median_latency_ms": 81.35145568847656,
+        "median_bandwidth_gbps": 6.59940141766938
+      }
+    ],
+    "d2h_fit": {
+      "fixed_latency_ms": 0.0078043035558618525,
+      "bandwidth_gbps": 6.600349309644605
+    }
+  },
+  "ssd": {
+    "read": {
+      "bandwidth_gbps": 5.053612032,
+      "iops": 2754.0,
+      "io_bytes": 25268060160,
+      "runtime_ms": 5000,
+      "mean_completion_latency_ms": 0.31146721031200003,
+      "p50_completion_latency_ms": 0.305152,
+      "p99_completion_latency_ms": 0.370688
+    },
+    "write": {
+      "bandwidth_gbps": 5.940200862,
+      "iops": 3237.152569,
+      "io_bytes": 29706944512,
+      "runtime_ms": 5001,
+      "mean_completion_latency_ms": 0.243461965409,
+      "p50_completion_latency_ms": 0.2304,
+      "p99_completion_latency_ms": 0.31744
+    },
+    "read_command": [
+      "fio",
+      "--name=hisim-tier-read",
+      "--filename=/tmp/hisim-tier-io-1bojsik3",
+      "--size=4G",
+      "--bs=1792k",
+      "--rw=read",
+      "--direct=1",
+      "--ioengine=libaio",
+      "--iodepth=1",
+      "--numjobs=1",
+      "--runtime=5",
+      "--time_based=1",
+      "--group_reporting=1",
+      "--output-format=json"
+    ],
+    "write_command": [
+      "fio",
+      "--name=hisim-tier-write",
+      "--filename=/tmp/hisim-tier-io-1bojsik3",
+      "--size=4G",
+      "--bs=1792k",
+      "--rw=write",
+      "--direct=1",
+      "--ioengine=libaio",
+      "--iodepth=1",
+      "--numjobs=1",
+      "--runtime=5",
+      "--time_based=1",
+      "--group_reporting=1",
+      "--output-format=json"
+    ]
+  },
+  "derived": {
+    "ssd_to_hbm_serial_bandwidth_gbps": 2.888174137912385,
+    "hbm_to_ssd_serial_bandwidth_gbps": 3.126449806588526
+  }
+}

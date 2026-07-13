@@ -1,0 +1,304 @@
+{
+  "schema_version": 1,
+  "experiment": "rtx4090-long-context-tiered-kv-calibration",
+  "created_at": "2026-07-13T03:19:41.147377+00:00",
+  "environment": {
+    "python": "3.10.20 | packaged by conda-forge | (main, Jun 11 2026, 03:31:56) [GCC 14.3.0]",
+    "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.39",
+    "vllm": "0.23.0",
+    "torch": "2.11.0+cu130",
+    "torch_cuda": "13.0",
+    "transformers": "4.57.1",
+    "cuda_available": true,
+    "cuda_device": "NVIDIA GeForce RTX 4090",
+    "nvidia_smi": "NVIDIA GeForce RTX 4090, GPU-e696a8ed-a887-59b2-5fab-7179ff99df74, 590.48.01, 49140 MiB, 15913 MiB, 35, 78.24 W"
+  },
+  "model": "qwen3-0.6b-longcal",
+  "method": {
+    "recompute_cost": "median(cold TTFT - warm TTFT) = linear * hit_tokens + quadratic * hit_tokens^2",
+    "io_cost": "pinned CUDA copies plus fio direct I/O at KV block size",
+    "batch_size": 1
+  },
+  "sources": {
+    "real": [
+      {
+        "path": "hisim/experiments/vllm/results/rtx4090_longctx_fit_p512_o8_real.json",
+        "sha256": "0ed2eec23574f7ffdfc04deaccff9c4fa0256896c8a7c3516fb713ba9ec1f108"
+      },
+      {
+        "path": "hisim/experiments/vllm/results/rtx4090_longctx_fit_p1024_o8_real.json",
+        "sha256": "421ea0cd1155650ec70d97c2cf96bf76630edc2ddab5b8acdc6519773a74e330"
+      },
+      {
+        "path": "hisim/experiments/vllm/results/rtx4090_longctx_fit_p2048_o8_real.json",
+        "sha256": "56201637af87c95c44bf20da48b4df44b8a7a2294c5325b9d870f63bf8bd7be4"
+      },
+      {
+        "path": "hisim/experiments/vllm/results/rtx4090_longctx_fit_p4096_o8_real.json",
+        "sha256": "e381b33328ed9c182ae9d8b5d2b2dc4a6276f377dd6821c89dd15ee61e425026"
+      },
+      {
+        "path": "hisim/experiments/vllm/results/rtx4090_longctx_fit_p6144_o8_real.json",
+        "sha256": "383c9e0cf26a80818b8aaabf30fba1a77e810c9ce10d889e8c0486fbecdc27df"
+      },
+      {
+        "path": "hisim/experiments/vllm/results/rtx4090_longctx_fit_p8064_o8_real.json",
+        "sha256": "e55caa3bfe120ac6c6c61927259de4e28b90d41f00c28eca65ee4648271beaa6"
+      }
+    ],
+    "io": {
+      "path": "hisim/experiments/vllm/results/rtx4090_tier_io_calibration_numa1.json",
+      "sha256": "c3648917acdfacea5c06c8519da294f3a47d78369dfe6aa91f40bc6dc24f2c14"
+    }
+  },
+  "length_points": [
+    {
+      "prompt_tokens": 512,
+      "hit_tokens": 496,
+      "sample_count": 5,
+      "saved_compute_ms_samples": [
+        8.112430572509766,
+        -2.9230117797851562,
+        0.5886554718017578,
+        1.519918441772461,
+        -1.935720443725586
+      ],
+      "saved_compute_ms_median": 0.5886554718017578,
+      "saved_compute_ms_mean": 1.0724544525146484,
+      "cold_ttft_ms_mean": 24.990034103393555,
+      "warm_ttft_ms_mean": 23.917579650878906
+    },
+    {
+      "prompt_tokens": 1024,
+      "hit_tokens": 1008,
+      "sample_count": 5,
+      "saved_compute_ms_samples": [
+        -5.712985992431641,
+        -5.634069442749023,
+        3.8084983825683594,
+        -2.5053024291992188,
+        3.332376480102539
+      ],
+      "saved_compute_ms_median": 0.0,
+      "saved_compute_ms_mean": -1.3422966003417969,
+      "cold_ttft_ms_mean": 21.838903427124023,
+      "warm_ttft_ms_mean": 23.18120002746582
+    },
+    {
+      "prompt_tokens": 2048,
+      "hit_tokens": 2032,
+      "sample_count": 5,
+      "saved_compute_ms_samples": [
+        -0.6113052368164062,
+        3.020048141479492,
+        1.3401508331298828,
+        8.090734481811523,
+        5.009889602661133
+      ],
+      "saved_compute_ms_median": 3.020048141479492,
+      "saved_compute_ms_mean": 3.369903564453125,
+      "cold_ttft_ms_mean": 27.244853973388672,
+      "warm_ttft_ms_mean": 23.874950408935547
+    },
+    {
+      "prompt_tokens": 4096,
+      "hit_tokens": 4080,
+      "sample_count": 5,
+      "saved_compute_ms_samples": [
+        30.208587646484375,
+        29.778242111206055,
+        31.804561614990234,
+        31.015634536743164,
+        27.32110023498535
+      ],
+      "saved_compute_ms_median": 30.208587646484375,
+      "saved_compute_ms_mean": 30.025625228881836,
+      "cold_ttft_ms_mean": 55.928659439086914,
+      "warm_ttft_ms_mean": 25.903034210205078
+    },
+    {
+      "prompt_tokens": 6144,
+      "hit_tokens": 6128,
+      "sample_count": 5,
+      "saved_compute_ms_samples": [
+        70.99080085754395,
+        55.95040321350098,
+        54.50606346130371,
+        55.69863319396973,
+        61.142683029174805
+      ],
+      "saved_compute_ms_median": 55.95040321350098,
+      "saved_compute_ms_mean": 59.65771675109863,
+      "cold_ttft_ms_mean": 85.59613227844238,
+      "warm_ttft_ms_mean": 25.93841552734375
+    },
+    {
+      "prompt_tokens": 8064,
+      "hit_tokens": 8048,
+      "sample_count": 5,
+      "saved_compute_ms_samples": [
+        106.5511703491211,
+        91.30382537841797,
+        94.26069259643555,
+        87.76473999023438,
+        95.11089324951172
+      ],
+      "saved_compute_ms_median": 94.26069259643555,
+      "saved_compute_ms_mean": 94.99826431274414,
+      "cold_ttft_ms_mean": 123.28758239746094,
+      "warm_ttft_ms_mean": 28.289318084716797
+    }
+  ],
+  "fit": {
+    "recompute_ms_per_token": 0.0007583432279927563,
+    "recompute_ms_per_token_squared": 1.3716009947561647e-06,
+    "in_sample": {
+      "mae_ms": 1.939108094052241,
+      "rmse_ms": 2.614865858370655,
+      "records": [
+        {
+          "prompt_tokens": 512,
+          "hit_tokens": 496,
+          "actual_saved_compute_ms": 0.5886554718017578,
+          "predicted_saved_compute_ms": 0.7135740314103398,
+          "absolute_error_ms": 0.124918559608582
+        },
+        {
+          "prompt_tokens": 1024,
+          "hit_tokens": 1008,
+          "actual_saved_compute_ms": 0.0,
+          "predicted_saved_compute_ms": 2.158044366952626,
+          "absolute_error_ms": 2.158044366952626
+        },
+        {
+          "prompt_tokens": 2048,
+          "hit_tokens": 2032,
+          "actual_saved_compute_ms": 3.020048141479492,
+          "predicted_saved_compute_ms": 7.204326865053359,
+          "absolute_error_ms": 4.1842787235738665
+        },
+        {
+          "prompt_tokens": 4096,
+          "hit_tokens": 4080,
+          "actual_saved_compute_ms": 30.208587646484375,
+          "predicted_saved_compute_ms": 25.926259169319465,
+          "absolute_error_ms": 4.28232847716491
+        },
+        {
+          "prompt_tokens": 6144,
+          "hit_tokens": 6128,
+          "actual_saved_compute_ms": 55.95040321350098,
+          "predicted_saved_compute_ms": 56.15401455100509,
+          "absolute_error_ms": 0.20361133750411398
+        },
+        {
+          "prompt_tokens": 8064,
+          "hit_tokens": 8048,
+          "actual_saved_compute_ms": 94.26069259643555,
+          "predicted_saved_compute_ms": 94.9421596959449,
+          "absolute_error_ms": 0.6814670995093479
+        }
+      ]
+    },
+    "leave_one_length_out": {
+      "mae_ms": 3.1597327457114086,
+      "records": [
+        {
+          "prompt_tokens": 512,
+          "actual_saved_compute_ms": 0.5886554718017578,
+          "predicted_saved_compute_ms": 0.7170203043684864,
+          "absolute_error_ms": 0.1283648325667286
+        },
+        {
+          "prompt_tokens": 1024,
+          "actual_saved_compute_ms": 0.0,
+          "predicted_saved_compute_ms": 2.3833680551556764,
+          "absolute_error_ms": 2.3833680551556764
+        },
+        {
+          "prompt_tokens": 2048,
+          "actual_saved_compute_ms": 3.020048141479492,
+          "predicted_saved_compute_ms": 8.741107219219863,
+          "absolute_error_ms": 5.721059077740371
+        },
+        {
+          "prompt_tokens": 4096,
+          "actual_saved_compute_ms": 30.208587646484375,
+          "predicted_saved_compute_ms": 24.329339375237275,
+          "absolute_error_ms": 5.8792482712471
+        },
+        {
+          "prompt_tokens": 6144,
+          "actual_saved_compute_ms": 55.95040321350098,
+          "predicted_saved_compute_ms": 56.25462658456194,
+          "absolute_error_ms": 0.30422337106096364
+        },
+        {
+          "prompt_tokens": 8064,
+          "actual_saved_compute_ms": 94.26069259643555,
+          "predicted_saved_compute_ms": 98.80282546293316,
+          "absolute_error_ms": 4.54213286649761
+        }
+      ]
+    }
+  },
+  "io_summary": {
+    "dram_to_hbm": {
+      "fixed_latency_ms": 0.0,
+      "bandwidth_gbps": 6.7298736429285
+    },
+    "hbm_to_dram": {
+      "fixed_latency_ms": 0.009694112313760892,
+      "bandwidth_gbps": 6.595627123629741
+    },
+    "ssd_read": {
+      "bandwidth_gbps": 5.412558089,
+      "iops": 2949.610078,
+      "io_bytes": 27068203008,
+      "runtime_ms": 5001,
+      "mean_completion_latency_ms": 0.280019164735,
+      "p50_completion_latency_ms": 0.272384,
+      "p99_completion_latency_ms": 0.305152
+    },
+    "ssd_write": {
+      "bandwidth_gbps": 6.015421146,
+      "iops": 3278.144371,
+      "io_bytes": 30083121152,
+      "runtime_ms": 5001,
+      "mean_completion_latency_ms": 0.241048901427,
+      "p50_completion_latency_ms": 0.2304,
+      "p99_completion_latency_ms": 0.288768
+    },
+    "ssd_to_hbm_serial_bandwidth_gbps": 2.9998794992768127,
+    "hbm_to_ssd_serial_bandwidth_gbps": 3.146088574267139
+  },
+  "generated_tiered_config": {
+    "dram_capacity_bytes": 68719476736,
+    "ssd_capacity_bytes": 549755813888,
+    "eviction_policy": "lru",
+    "prefetch_policy": "cost_aware",
+    "write_policy": "write_through",
+    "recompute_ms_per_token": 0.0007583432279927563,
+    "recompute_ms_per_token_squared": 1.3716009947561647e-06,
+    "min_savings_ms": 1.0,
+    "max_prefetch_blocks": 0,
+    "dram_read_bandwidth_gbps": 6.7298736429285,
+    "dram_write_bandwidth_gbps": 6.595627123629741,
+    "ssd_read_bandwidth_gbps": 2.9998794992768127,
+    "ssd_write_bandwidth_gbps": 6.015421146,
+    "dram_read_latency_ms": 0.0,
+    "dram_write_latency_ms": 0.009694112313760892,
+    "ssd_read_latency_ms": 0.0,
+    "ssd_write_latency_ms": 0.0,
+    "prefetch_overlap_fraction": 0.0,
+    "write_overlap_fraction": 1.0,
+    "parallel_tier_reads": false,
+    "ssd_state_path": "/tmp/hisim-vllm-ssd-state.json",
+    "metrics_path": "/tmp/hisim-vllm-tiered-metrics.json"
+  },
+  "limitations": [
+    "Single-request sequential Qwen3-0.6B measurements.",
+    "The SSD path is modeled as serial SSD->DRAM plus DRAM->HBM.",
+    "I/O contention and overlap need separate concurrent calibration."
+  ]
+}
