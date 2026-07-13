@@ -14,6 +14,7 @@ from .scheduler_simulator import (
     VllmSchedulerSimulator,
 )
 from .benchmark_runner import VllmBenchmarkRunner
+from .engine import create_hisim_llm
 
 __all__ = [
     "COMPATIBLE_VLLM_VERSIONS",
@@ -22,5 +23,6 @@ __all__ = [
     "SimulationResult",
     "VllmRequestSpec",
     "VllmBenchmarkRunner",
+    "create_hisim_llm",
     "VllmSchedulerSimulator",
 ]

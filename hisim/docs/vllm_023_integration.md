@@ -1,11 +1,20 @@
 # vLLM 0.23 接入设计与复现实验入口
 
-## 当前边界
+## 接入层次
 
-第一阶段适配器直接实例化 vLLM 0.23.0 的 `Scheduler`、`KVCacheManager`、
-block allocator 和 prefix block hasher。HiSim 只替换模型执行器：每个可解码请求产生一个
-固定 token，并使用可替换的延迟模型推进逻辑时钟。因此调度、分块、前缀复用、抢占和结束判定
-来自真实 vLLM 代码，TTFT、TPOT、吞吐和 KVCache 命中指标由同一次事件循环计算。
+当前同时提供三种入口：
+
+1. `VllmSchedulerSimulator`：直接驱动 vLLM 0.23.0 `Scheduler`、`KVCacheManager`、
+   block allocator 和 prefix block hasher，用逻辑时钟快速回放大型 workload。
+2. `create_hisim_llm()`：返回原生 `vllm.LLM` offline 对象，但通过 vLLM 官方
+   `worker_cls` 扩展点加载 `HiSimWorker`。
+3. `hisim.simulation.vllm.launch_server`：启动完整 vLLM OpenAI server、EngineCore、
+   Scheduler、tokenizer、output processor 和 Prometheus metrics，只替换模型 Worker。
+
+`HiSimWorker` 跳过 CUDA/NCCL 初始化、模型权重加载、KV tensor 分配、kernel compilation 和
+GPU forward；它仍让原生 EngineCore 完成 KV block 规划和请求调度，然后根据
+`SchedulerOutput` 调用 HiSim latency profile、产生合法 `ModelRunnerOutput`。因此这不是仿写的
+HTTP server 或 scheduler，而是完整 vLLM 引擎中的模型执行替换。
 
 这不是最终校准结果。默认 `uncalibrated-linear` 延迟参数仅用于验证调度闭环；只有
 `calibrated: true` 且带有 RTX 4090 原始测量文件的 profile 才能用于仿真精度结论。
@@ -45,6 +54,44 @@ PYTHONPATH=hisim/src conda run -n hisim-vllm023 \
   --output /absolute/path/to/simulation.json \
   --instance-id replica-0
 ```
+
+### 完整 OpenAI server
+
+```bash
+PYTHONPATH=hisim/src conda run -n hisim-vllm023 env \
+  HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  python -m hisim.simulation.vllm.launch_server \
+  /path/to/local/Qwen3-0.6B \
+  --hisim-instance-id=replica-0 \
+  --hisim-latency-profile=/path/to/rtx4090_worker_profile.json \
+  --hisim-execution-mode=wall_clock \
+  --hisim-trace-path=/tmp/hisim-vllm-worker.jsonl \
+  --host=127.0.0.1 --port=18001 \
+  --served-model-name=qwen3-hisim \
+  --max-model-len=512 --max-num-batched-tokens=512 \
+  --block-size=16
+```
+
+该入口支持标准 `/v1/completions`、`/v1/chat/completions`、SSE streaming、`/metrics` 和
+原生 vLLM prefix-cache counters。`wall_clock` 按预测时延 sleep，适合透明服务测试；
+`fast_forward` 不等待，用于测量框架空载开销和快速功能回归。
+
+### 原生 offline API
+
+```python
+from hisim.simulation.vllm import create_hisim_llm
+
+llm = create_hisim_llm(
+    model="/path/to/local/Qwen3-0.6B",
+    instance_id="replica-0",
+    latency_profile_path="/path/to/profile.json",
+    execution_mode="fast_forward",
+)
+outputs = llm.generate(...)
+```
+
+返回对象就是 `vllm.LLM`，可以使用其标准 `generate()`、`chat()` 和
+`reset_prefix_cache()` 接口。
 
 `PYTHONHASHSEED=0` 固定 vLLM prefix block hash 的初始化，模型路径必须指向本地缓存，
 不需要也不应触发下载。运行单测：
@@ -88,12 +135,12 @@ runner.shutdown()
 | HiSim Dataset/BenchmarkConfig | 支持 | 支持 |
 | cold/warm/flush cache | 支持 | 支持 |
 | 统一 TTFT/TPOT/吞吐/命中指标 | 支持 | 支持 |
-| 模拟 HTTP server | 支持 | 尚未提供；当前为 offline runner |
+| 原生 offline engine | 支持 | 支持，返回 `vllm.LLM` |
+| 模拟 HTTP server | 支持 | 支持完整 vLLM OpenAI server |
+| 框架原生 metrics | SGLang metrics | vLLM Prometheus metrics + Worker trace |
+| 无 GPU/权重运行 | 支持 | 支持，不分配真实 KV tensor |
 
-最后一项不是 scheduler 仿真或校准的阻塞项；需要用现有 HTTP benchmark 客户端透明替换 backend
-时，再在 offline runner 外封装 OpenAI-compatible simulation server。
-
-## 后续校准闭环
+## 校准闭环
 
 1. 在 RTX 4090 上以固定 Qwen 本地模型、input/output length、并发度和 prefix overlap
    运行真实 vLLM 服务。
@@ -103,5 +150,9 @@ runner.shutdown()
    分离。
 4. 用同一 token workload 运行真实服务和本适配器，对齐 TTFT、TPOT、吞吐、命中率，报告
    MAPE、P50/P90/P99 误差和不能匹配的原因。
-5. 校准通过后再将该 backend 接到 HiSim 的统一 benchmark/manager 入口，并与现有 SGLang
-   接入使用同一结果 schema 做回归。
+5. 用 `fast_forward` 完整 server 测量 EngineCore/frontend 空载开销，从真实服务时延中扣除后
+   拟合 Worker 执行 profile，避免重复计算框架开销。
+
+当前完整 hook 主要验证 Qwen3 dense full-attention generation、TP=PP=1。多模态、LoRA、
+speculative decoding、混合 attention/Mamba 和多 rank worker 尚未声明支持；遇到这些配置应扩展
+KV spec 和模拟输出，而不能默认外推。
