@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "experiment": "vllm_hisim_tiered_kv_long_context_validation",
+  "date": "2026-07-13",
+  "vllm_version": "0.23.0",
+  "model": "Qwen3-0.6B",
+  "execution_mode": "fast_forward",
+  "instance_id": "long-context-validation",
+  "workload": {
+    "distinct_prefixes": 3,
+    "prompt_tokens_per_request": 4096,
+    "output_tokens_per_request": 2,
+    "final_request_repeats_first_prefix": true
+  },
+  "cache": {
+    "block_size": 16,
+    "kv_bytes_per_block": 1835008,
+    "hbm_capacity_blocks": 512,
+    "dram_capacity_blocks": 64,
+    "ssd_capacity_blocks": 1024,
+    "eviction_policy": "lru",
+    "prefetch_policy": "cost_aware"
+  },
+  "cost_model": {
+    "recompute_ms_per_token": 0.05,
+    "recompute_ms_per_token_squared": 0.000001,
+    "dram_read_bandwidth_gbps": 25.0,
+    "ssd_read_bandwidth_gbps": 7.0
+  },
+  "final_reload_decision": {
+    "decision": "cache",
+    "local_hbm_tokens": 0,
+    "selected_external_tokens": 4080,
+    "ssd_blocks": 255,
+    "selected_recompute_tokens": 16,
+    "effective_load_latency_ms": 90.4948224,
+    "baseline_recompute_latency_ms": 221.57721600000002,
+    "selected_recompute_latency_ms": 0.9308160000000001,
+    "estimated_savings_ms": 130.15157760000002
+  },
+  "observed_vllm_output": {
+    "num_cached_tokens": 4080
+  },
+  "aggregate_metrics": {
+    "cache_decisions": 1,
+    "recompute_decisions": 3,
+    "ssd_candidate_tokens": 4080,
+    "ssd_hit_tokens": 4080,
+    "ssd_read_bytes": 467927040,
+    "promoted_blocks": 255,
+    "total_hit_rate": 0.25
+  },
+  "interpretation": "Functional validation of the native vLLM scheduler path; cost parameters are illustrative and are not an RTX 4090 accuracy claim."
+}
