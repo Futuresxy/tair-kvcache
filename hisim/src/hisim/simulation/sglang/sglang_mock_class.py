@@ -1029,7 +1029,7 @@ class MockHiCacheStorage:
         else:
             logger.info("Using common set HiCache storage")
             self.storage: set = set()
-            self.storage_file_path: str = "/tmp/hisim/hicache/storage_keys.txt"
+            self.storage_file_path: str = Envs.hicache_storage_path()
             os.makedirs(os.path.dirname(self.storage_file_path), exist_ok=True)
 
             if os.path.exists(self.storage_file_path):
@@ -1043,8 +1043,7 @@ class MockHiCacheStorage:
             logger.info(
                 "Cleared KV cache saved in the storage backend because the system environment variable (`HISIM_RESET_HICACHE_STORAGE`) is set."
             )
-            with open(self.storage_file_path, "w") as f:
-                pass
+            self.clear()
 
     def init_kvcm(self):
         # Initialize kvcm based on reference examples

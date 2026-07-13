@@ -1,0 +1,50 @@
+[
+  {
+    "completed": 300,
+    "disk_prefetch_ratio": 0.0,
+    "mean_e2e_latency_ms": 83994.61371569181,
+    "mean_tpot_ms": 29.23972803521366,
+    "mean_ttft_ms": 64872.360739093296,
+    "pass": "cold",
+    "policy": "lru",
+    "prefix_cache_reused_ratio": 0.04724168989257454,
+    "storage_keys": 241024,
+    "summary": "test/results/llmservingsim_sharegpt_300_hicache/lru/cold/sharegpt-qwen3-32b-300-sps10-lru-cold.summary.json"
+  },
+  {
+    "completed": 300,
+    "disk_prefetch_ratio": 0.2892988159619005,
+    "mean_e2e_latency_ms": 88155.49420013484,
+    "mean_tpot_ms": 34.670112620279724,
+    "mean_ttft_ms": 65534.612778945586,
+    "pass": "warm",
+    "policy": "lru",
+    "prefix_cache_reused_ratio": 0.19736287694585433,
+    "storage_keys": 243469,
+    "summary": "test/results/llmservingsim_sharegpt_300_hicache/lru/warm/sharegpt-qwen3-32b-300-sps10-lru-warm.summary.json"
+  },
+  {
+    "completed": 300,
+    "disk_prefetch_ratio": 0.0,
+    "mean_e2e_latency_ms": 84053.07001901125,
+    "mean_tpot_ms": 29.250455003405545,
+    "mean_ttft_ms": 64925.019120027515,
+    "pass": "cold",
+    "policy": "lfu",
+    "prefix_cache_reused_ratio": 0.04735379274887801,
+    "storage_keys": 241023,
+    "summary": "test/results/llmservingsim_sharegpt_300_hicache/lfu/cold/sharegpt-qwen3-32b-300-sps10-lfu-cold.summary.json"
+  },
+  {
+    "completed": 300,
+    "disk_prefetch_ratio": 0.2925343363317626,
+    "mean_e2e_latency_ms": 86401.06650865512,
+    "mean_tpot_ms": 34.053690164540654,
+    "mean_ttft_ms": 64176.10485834179,
+    "pass": "warm",
+    "policy": "lfu",
+    "prefix_cache_reused_ratio": 0.1526802246695865,
+    "storage_keys": 243546,
+    "summary": "test/results/llmservingsim_sharegpt_300_hicache/lfu/warm/sharegpt-qwen3-32b-300-sps10-lfu-warm.summary.json"
+  }
+]

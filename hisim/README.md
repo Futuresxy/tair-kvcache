@@ -63,7 +63,7 @@ Run the following command from the project root directory (the folder containing
 ```bash
 python3 -m hisim.simulation.sglang.launch_server \
   --model-path "Qwen/Qwen3-32B-FP8" \
-  --sim-config-path test/assets/mock/config.json \
+  --sim-config-path configs/simulation/qwen3_32b_h100_aic.json \
   --skip-server-warmup
 ```
 
@@ -75,7 +75,7 @@ python3 -m hisim.simulation.sglang.launch_server \
 >   export SGLANG_USE_CPU_ENGINE=1
 >   export FLASHINFER_DISABLE_VERSION_CHECK=1
 >   ```
-> - The provided [config file](test/assets/mock/config.json) is for testing. Adjust hardware bandwidth and other parameters to match your actual deployment scenario for higher fidelity. If using Hisim-collected traces, use the corresponding config file. See **Configuration File Format** below for details.
+> - The provided [config file](configs/simulation/qwen3_32b_h100_aic.json) is a runnable simulation scenario. Adjust hardware bandwidth, predictor database, and scheduler parameters to match your actual deployment scenario for higher fidelity. If using Hisim-collected traces, use the corresponding config file. See **Configuration File Format** below for details.
 
 #### Run the Simulation Benchmark
 
@@ -172,13 +172,20 @@ Hisim uses **dynamic interception** to hijack the execution flow of the inferenc
 
 The config file is a JSON with three main sections:
 
+Model and accelerator specifications live in `src/hisim/spec`. Simulation
+configs are not model/hardware registries; they are runnable scenarios that
+select a registered platform, a predictor database, and scheduler settings.
+When SGLang provides a HuggingFace model config at runtime, Hisim parses that
+runtime config first and only uses the built-in model registry as a fallback.
+
 - **`platform`**: Hardware and bandwidth settings  
-  - `accelerator.name`: GPU model (e.g., `"H20"`)
+  - `accelerator.name`: hardware model or alias registered in `src/hisim/spec/accelerator` (e.g., `"H20"`, `"H100_SXM"`, `"RTX4090"`, `"Ascend910B"`)
   - `disk_*_bandwidth_gb`: L3 (disk) read/write bandwidth (GB/s)
   - `memory_*_bandwidth_gb`: L2 (memory) read/write bandwidth (GB/s)
 
 - **`predictor`**: Time prediction module  
   - `name`: predictor type (`"aiconfigurator"` or `"schedule_replay"`)
+  - `device_name`: AIConfigurator system database name. This is separate from `platform.accelerator.name`; keep them aligned unless intentionally using a predictor database as a proxy.
   - See **TimePredictor** section below for details
 
 - **`scheduler`**: Parallelism and backend metadata  
@@ -246,9 +253,10 @@ Here is the English translation of your Markdown content, polished for clarity a
 
 **Configuration**
 
-In the `hisim/test/assets/mock` directory, we provide simulation configuration files for running Qwen3-8B and Qwen3-32B-FP8 on H20:  
-- `config.qwen8b.aic.json`  
-- `config.qwen32b.aic.json`
+In the `configs/simulation` directory, we provide simulation configuration files for running Qwen3 models:
+- `qwen3_8b_h20_aic.json`
+- `qwen3_32b_h20_aic.json`
+- `qwen3_32b_h100_aic.json`
 
 The base hardware specifications and operator interpolation data package for **aiconfigurator** can be obtained from the `Hisim` directory in the [LatencyPrism/hisim](https://github.com/kunluninsight/LatencyPrism/tree/hisim) repository.  
 To use these configurations, download `H20_AIC.zip`, extract it to your `download_path`, and you're ready to run simulations.

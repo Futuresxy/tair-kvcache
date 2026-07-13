@@ -1,0 +1,1307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="HiSim 架构学习、跨加速器仿真、vLLM 接入、多级 KVCache 管理与 ASPLOS 2027 September Cycle 投稿路线图">
+  <title>HiSim × KVCache：ASPLOS 2027 研究与实现路线图</title>
+  <style>
+    :root {
+      --ink: #17212b;
+      --muted: #61707f;
+      --paper: #f6f4ef;
+      --surface: #ffffff;
+      --surface-2: #edf2f3;
+      --line: #d8dee2;
+      --navy: #17324d;
+      --teal: #087f78;
+      --teal-soft: #dff3ef;
+      --orange: #d96b27;
+      --orange-soft: #fff0e4;
+      --red: #b64242;
+      --red-soft: #fdeaea;
+      --green: #287a4b;
+      --green-soft: #e5f4e9;
+      --violet: #7250a3;
+      --shadow: 0 12px 34px rgba(23, 50, 77, .09);
+      --radius: 14px;
+      --sidebar: 284px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 90% -20%, rgba(8, 127, 120, .12), transparent 35rem),
+        var(--paper);
+      font-family: Inter, "Noto Sans CJK SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+      line-height: 1.72;
+    }
+    a { color: var(--teal); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: var(--orange); }
+    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code { color: #28455e; background: #eaf0f3; padding: .12rem .34rem; border-radius: 4px; }
+    pre {
+      margin: 1rem 0;
+      padding: 1rem 1.15rem;
+      overflow: auto;
+      color: #eaf5f3;
+      background: #132739;
+      border-radius: 10px;
+      line-height: 1.55;
+    }
+    pre code { padding: 0; color: inherit; background: transparent; }
+
+    .sidebar {
+      position: fixed;
+      inset: 0 auto 0 0;
+      z-index: 20;
+      width: var(--sidebar);
+      overflow-y: auto;
+      padding: 24px 18px 34px;
+      color: #e8f0f2;
+      background: linear-gradient(160deg, #132b40, #0d3d46 75%, #0b4f4a);
+      box-shadow: 8px 0 28px rgba(10, 38, 50, .12);
+    }
+    .brand { padding: 0 10px 20px; border-bottom: 1px solid rgba(255,255,255,.16); }
+    .brand strong { display: block; font-size: 1.35rem; letter-spacing: .02em; }
+    .brand small { color: #b9d4d4; }
+    .sidebar nav { margin-top: 18px; }
+    .sidebar nav a {
+      display: block;
+      padding: 7px 10px;
+      color: #cfe1e2;
+      border-left: 3px solid transparent;
+      border-radius: 0 6px 6px 0;
+      text-decoration: none;
+      font-size: .91rem;
+    }
+    .sidebar nav a:hover, .sidebar nav a.active {
+      color: white;
+      background: rgba(255,255,255,.09);
+      border-left-color: #64d4c5;
+    }
+    .progress-box { margin: 22px 8px 0; padding: 12px; background: rgba(255,255,255,.08); border-radius: 10px; }
+    .progress-box small { display: flex; justify-content: space-between; color: #dceced; }
+    .progress-track { height: 7px; margin-top: 8px; overflow: hidden; background: rgba(255,255,255,.14); border-radius: 99px; }
+    .progress-fill { width: 0; height: 100%; background: #63d4c4; transition: width .25s ease; }
+
+    main { margin-left: var(--sidebar); }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 520px;
+      padding: 78px clamp(28px, 7vw, 100px) 64px;
+      color: white;
+      background:
+        linear-gradient(115deg, rgba(15, 40, 62, .98), rgba(9, 92, 88, .90)),
+        repeating-linear-gradient(45deg, transparent 0 18px, rgba(255,255,255,.03) 18px 19px);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 420px;
+      height: 420px;
+      right: -150px;
+      bottom: -240px;
+      border: 70px solid rgba(255,255,255,.06);
+      border-radius: 50%;
+    }
+    .eyebrow { margin: 0 0 10px; color: #8be1d2; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    .hero h1 { max-width: 980px; margin: 0; font-size: clamp(2.35rem, 5.2vw, 5rem); line-height: 1.08; letter-spacing: -.035em; }
+    .hero .lead { max-width: 890px; margin: 26px 0 0; color: #d8e8ea; font-size: clamp(1.04rem, 1.6vw, 1.3rem); }
+    .hero-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+    .pill { display: inline-flex; align-items: center; gap: 8px; padding: 8px 13px; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; background: rgba(255,255,255,.08); font-size: .92rem; }
+    .pill.deadline { color: #fff7e8; border-color: rgba(255,190,117,.55); background: rgba(217,107,39,.25); }
+
+    .content { max-width: 1320px; margin: 0 auto; padding: 54px clamp(22px, 5vw, 72px) 100px; }
+    section { scroll-margin-top: 24px; margin: 0 0 72px; }
+    h2 { margin: 0 0 22px; color: var(--navy); font-size: clamp(1.75rem, 3vw, 2.55rem); line-height: 1.2; letter-spacing: -.02em; }
+    h3 { margin: 30px 0 12px; color: #21455c; font-size: 1.28rem; }
+    h4 { margin: 18px 0 8px; color: var(--navy); }
+    .section-kicker { margin-bottom: 5px; color: var(--teal); font-weight: 800; letter-spacing: .1em; text-transform: uppercase; font-size: .78rem; }
+    .section-intro { max-width: 980px; color: var(--muted); font-size: 1.05rem; }
+
+    .grid { display: grid; gap: 18px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card { padding: 22px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .card h3, .card h4 { margin-top: 0; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .card.accent { border-top: 4px solid var(--teal); }
+    .card.warn { border-top: 4px solid var(--orange); }
+    .card.danger { border-top: 4px solid var(--red); }
+    .card.research { border-top: 4px solid var(--violet); }
+    .metric { font-size: 2rem; line-height: 1.1; font-weight: 850; color: var(--navy); }
+    .metric small { display: block; margin-top: 8px; color: var(--muted); font-size: .82rem; font-weight: 500; }
+
+    .callout { margin: 20px 0; padding: 17px 20px; border-left: 5px solid var(--teal); background: var(--teal-soft); border-radius: 0 10px 10px 0; }
+    .callout.warning { border-color: var(--orange); background: var(--orange-soft); }
+    .callout.danger { border-color: var(--red); background: var(--red-soft); }
+    .callout strong { color: var(--navy); }
+    .status { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: .77rem; font-weight: 800; white-space: nowrap; }
+    .status.done { color: var(--green); background: var(--green-soft); }
+    .status.partial { color: #9a521f; background: var(--orange-soft); }
+    .status.missing { color: var(--red); background: var(--red-soft); }
+    .status.proposed { color: var(--violet); background: #eee8f7; }
+
+    .table-wrap { margin: 18px 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 5px 18px rgba(23,50,77,.05); }
+    table { width: 100%; border-collapse: collapse; font-size: .91rem; }
+    th, td { padding: 12px 13px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: #29485e; background: #eef3f4; font-size: .82rem; letter-spacing: .02em; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: #fbfcfc; }
+
+    .architecture { display: grid; gap: 13px; margin: 24px 0; padding: 22px; background: #132b40; border-radius: var(--radius); color: white; box-shadow: var(--shadow); }
+    .arch-row { display: grid; grid-template-columns: 150px 1fr; gap: 14px; align-items: stretch; }
+    .arch-label { display: flex; align-items: center; justify-content: center; padding: 12px; color: #9fe0d7; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; font-weight: 800; }
+    .arch-items { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 9px; }
+    .arch-item { padding: 12px; color: #e9f3f3; background: rgba(255,255,255,.08); border-radius: 8px; border: 1px solid rgba(255,255,255,.10); }
+    .arch-item em { display: block; color: #a9c4ca; font-size: .79rem; font-style: normal; }
+    .flow { counter-reset: flow; display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 22px 0; }
+    .flow > div { position: relative; min-height: 112px; padding: 38px 13px 13px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+    .flow > div::before { counter-increment: flow; content: counter(flow); position: absolute; top: 10px; left: 12px; width: 22px; height: 22px; color: white; background: var(--teal); border-radius: 50%; text-align: center; line-height: 22px; font-size: .75rem; font-weight: bold; }
+
+    .checklist { list-style: none; margin: 0; padding: 0; }
+    .checklist li { display: grid; grid-template-columns: 24px 1fr; gap: 9px; padding: 9px 0; border-bottom: 1px dashed var(--line); }
+    .checklist li:last-child { border-bottom: 0; }
+    .checklist input { margin-top: 6px; accent-color: var(--teal); transform: scale(1.12); }
+    .checklist label { cursor: pointer; }
+    .checklist input:checked + label { color: var(--muted); text-decoration: line-through; }
+
+    .timeline { position: relative; margin: 24px 0 0 16px; padding-left: 30px; border-left: 3px solid #b6dcd7; }
+    .milestone { position: relative; margin: 0 0 25px; padding: 18px 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+    .milestone::before { content: ""; position: absolute; top: 24px; left: -40px; width: 16px; height: 16px; background: var(--teal); border: 4px solid var(--paper); border-radius: 50%; }
+    .milestone.critical::before { background: var(--orange); }
+    .milestone .date { color: var(--teal); font-weight: 850; }
+    .milestone h3 { margin: 3px 0 8px; }
+
+    .formula { padding: 15px 18px; overflow-x: auto; color: #1c4356; background: #eef6f5; border: 1px solid #c7e2de; border-radius: 9px; font-family: Georgia, "Times New Roman", serif; font-size: 1.03rem; }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; list-style: none; }
+    .tag-list li { padding: 5px 9px; background: var(--surface-2); border-radius: 999px; font-size: .8rem; }
+    .file { word-break: break-word; }
+    .mini { color: var(--muted); font-size: .86rem; }
+    .nowrap { white-space: nowrap; }
+
+    .mobile-toggle { display: none; position: fixed; right: 14px; bottom: 14px; z-index: 40; width: 48px; height: 48px; color: white; background: var(--teal); border: 0; border-radius: 50%; box-shadow: var(--shadow); font-size: 1.2rem; }
+    .back-top { position: fixed; right: 20px; bottom: 20px; z-index: 15; display: grid; place-items: center; width: 42px; height: 42px; color: white; background: #163b4f; border-radius: 50%; text-decoration: none; opacity: .72; }
+
+    @media (max-width: 1120px) {
+      .grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 860px) {
+      .sidebar { transform: translateX(-102%); transition: transform .2s ease; }
+      .sidebar.open { transform: translateX(0); }
+      main { margin-left: 0; }
+      .mobile-toggle { display: block; }
+      .back-top { display: none; }
+      .grid.two, .grid.three, .grid.four { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: repeat(2, 1fr); }
+      .hero { min-height: auto; padding-top: 60px; }
+    }
+    @media (max-width: 560px) {
+      .flow { grid-template-columns: 1fr; }
+      .arch-row { grid-template-columns: 1fr; }
+      .hero h1 { font-size: 2.2rem; }
+      .content { padding-inline: 16px; }
+      th, td { padding: 10px; }
+    }
+    @media print {
+      :root { --paper: white; }
+      .sidebar, .mobile-toggle, .back-top, .progress-box { display: none !important; }
+      main { margin: 0; }
+      .hero { min-height: 0; padding: 38px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .content { max-width: none; padding: 28px; }
+      section { break-inside: auto; margin-bottom: 40px; }
+      .card, .milestone, .table-wrap { box-shadow: none; break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+      a[href^="http"]::after { content: " (" attr(href) ")"; font-size: .7em; color: #666; }
+    }
+  </style>
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <strong>HiSim × KVCache</strong>
+      <small>研究、实现与投稿路线图 · 2026-07-12</small>
+    </div>
+    <nav aria-label="章节目录">
+      <a href="#decision">0. 先做什么</a>
+      <a href="#as-is">1. 当前 HiSim 架构</a>
+      <a href="#capability">2. 能力与缺口</a>
+      <a href="#learning">3. 深入学习路径</a>
+      <a href="#target">4. 目标仿真架构</a>
+      <a href="#hardware">5. 硬件建模</a>
+      <a href="#vllm">6. vLLM 接入</a>
+      <a href="#cache">7. 策略与多级缓存</a>
+      <a href="#research">8. 论文问题与实验</a>
+      <a href="#timeline">9. 59 天投稿计划</a>
+      <a href="#implementation">10. 代码实施蓝图</a>
+      <a href="#quality">11. 验证与复现</a>
+      <a href="#paper">12. 论文结构</a>
+      <a href="#risks">13. 风险与降级</a>
+      <a href="#first-week">14. 第一周任务</a>
+      <a href="#references">15. 资料与源码索引</a>
+    </nav>
+    <div class="progress-box">
+      <small><span>路线图完成度</span><span id="progressText">0%</span></small>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+      <small style="margin-top:8px"><span id="progressCount">0 / 0</span><span>本机保存</span></small>
+    </div>
+  </aside>
+
+  <button class="mobile-toggle" id="mobileToggle" aria-label="打开目录">☰</button>
+  <a class="back-top" href="#top" aria-label="返回顶部">↑</a>
+
+  <main id="top">
+    <header class="hero">
+      <p class="eyebrow">Architecture · Systems · Storage · Simulation</p>
+      <h1>HiSim 与多级 KVCache<br>研究实施路线图</h1>
+      <p class="lead">
+        从读懂当前 SGLang-in-the-loop 仿真器开始，逐步建立可校准的 H100/H20、RTX 4090、Ascend 910C
+        性能模型，接入 vLLM，系统评估 LRU/FIFO/LFU/树感知策略，并研究 HBM–DRAM–SSD 间的放置、迁移和预取。
+      </p>
+      <div class="hero-meta">
+        <span class="pill deadline">ASPLOS 2027 September Cycle：2026-09-09 AoE</span>
+        <span class="pill">距截止约 59 天</span>
+        <span class="pill">当前仓库基线：main @ 8f9aaf6 + 本地未提交改动</span>
+        <span class="pill">硬约束：KVCache 不跨 instance_id 复用</span>
+      </div>
+    </header>
+
+    <div class="content">
+      <section id="decision">
+        <p class="section-kicker">Decision first</p>
+        <h2>0. 先确定论文最小闭环</h2>
+        <p class="section-intro">
+          这项工作可以长成一个很大的平台，但 ASPLOS 2027 秋季轮只剩约 59 天。投稿版本必须围绕一个可证伪、可复现的系统命题收敛；“多支持几种硬件和策略”本身不是足够强的研究贡献。
+        </p>
+
+        <div class="callout">
+          <strong>推荐论文主线：</strong>构建一个保留真实 serving framework 控制流、又能抽象多种加速器和多级 KVCache 的 framework-in-the-loop 仿真器；在此基础上提出
+          <strong>benefit-per-byte / reuse-deadline 感知</strong>的分层放置与预取策略，证明它能在不同硬件、负载复用度和存储带宽下稳定改善 SLO attainment 或 goodput，而不是仅提高命中率。
+        </div>
+
+        <div class="grid three">
+          <article class="card accent">
+            <h3>投稿必须完成</h3>
+            <ul>
+              <li>H100 或 H20 上的仿真—实机闭环校准。</li>
+              <li>第二种差异明显的目标平台：优先 RTX 4090；若已有 910C 机器和权限则换成 910C。</li>
+              <li>SGLang 后端端到端可复现；vLLM 至少完成一条验证链路。</li>
+              <li>LRU/FIFO/LFU + 一个新策略，HBM/DRAM/SSD 三层。</li>
+              <li>误差、仿真速度、策略收益、消融、失败案例。</li>
+            </ul>
+          </article>
+          <article class="card warn">
+            <h3>可延后到投稿后</h3>
+            <ul>
+              <li>同时完整支持 910C、4090、H20、H100 的全部模型组合。</li>
+              <li>分布式多节点、网络拥塞、PD 分离的全细节。</li>
+              <li>大量启发式策略和自动搜索器。</li>
+              <li>真实 SSD 数据面与所有 KVCM storage backend。</li>
+              <li>统一 SGLang/vLLM 每一个版本的兼容层。</li>
+            </ul>
+          </article>
+          <article class="card danger">
+            <h3>2026-08-09 Go / No-Go</h3>
+            <p>若届时没有“至少两种硬件、两类 workload、端到端延迟 MAPE 可接受”的验证闭环，应放弃在 9 月稿件中宣称跨加速器通用性，改投更聚焦的 cache-policy study，继续把平台打磨到下一周期。</p>
+          </article>
+        </div>
+
+        <div class="grid four" style="margin-top:18px">
+          <div class="card"><div class="metric">59 天<small>2026-07-12 → 2026-09-09 AoE</small></div></div>
+          <div class="card"><div class="metric">11 页<small>ASPLOS 2027 正文页数上限，不含参考文献</small></div></div>
+          <div class="card"><div class="metric">2 页<small>Rapid review 只看前两页，必须自洽且突出体系结构/OS 贡献</small></div></div>
+          <div class="card"><div class="metric">1 个<small>核心机制优于堆叠多个浅层 feature</small></div></div>
+        </div>
+      </section>
+
+      <section id="as-is">
+        <p class="section-kicker">As-is architecture</p>
+        <h2>1. 当前 HiSim 是如何搭起来的</h2>
+        <p class="section-intro">
+          当前 HiSim 不是从零重写的 serving engine，也不是单纯的排队论模型。它在导入 SGLang 时动态 hook 类和模块，保留请求队列、调度、RadixAttention/HiCache 控制流，用 mock pool 和 mock forward 避免真实权重与 GPU 计算，再把每个 iteration 的 batch shape 交给 AIConfigurator 预测耗时。
+        </p>
+
+        <div class="architecture" aria-label="当前 HiSim 分层架构">
+          <div class="arch-row">
+            <div class="arch-label">输入与负载</div>
+            <div class="arch-items">
+              <div class="arch-item">hisim-collection trace<em>timestamp / input_ids / output length</em></div>
+              <div class="arch-item">random / ShareGPT<em>合成或采样负载</em></div>
+              <div class="arch-item">LLMServingSim converter<em>本地新增的 agentic replay 路径</em></div>
+            </div>
+          </div>
+          <div class="arch-row">
+            <div class="arch-label">真实框架控制流</div>
+            <div class="arch-items">
+              <div class="arch-item">SGLang HTTP server<em>TokenizerManager / Scheduler</em></div>
+              <div class="arch-item">Radix / HiRadix cache<em>prefix match / eviction / prefetch</em></div>
+              <div class="arch-item">continuous batching<em>prefill / decode iteration</em></div>
+            </div>
+          </div>
+          <div class="arch-row">
+            <div class="arch-label">HiSim 劫持层</div>
+            <div class="arch-items">
+              <div class="arch-item">Class / module hooks<em>__build_class__ + sys.meta_path</em></div>
+              <div class="arch-item">Mock ModelRunner<em>不加载权重；返回空 logits/固定 token</em></div>
+              <div class="arch-item">Mock KV / host / storage<em>接口兼容 + 容量/带宽时间</em></div>
+            </div>
+          </div>
+          <div class="arch-row">
+            <div class="arch-label">性能与时间</div>
+            <div class="arch-items">
+              <div class="arch-item">ScheduleBatch<em>input_length + past_kv_length</em></div>
+              <div class="arch-item">AIConfigurator predictor<em>算子数据库 + scale factor + XGBoost 修正</em></div>
+              <div class="arch-item">StateManager<em>全局时钟 + inference / L2 I/O</em></div>
+            </div>
+          </div>
+          <div class="arch-row">
+            <div class="arch-label">结果</div>
+            <div class="arch-items">
+              <div class="arch-item">metrics.json<em>TTFT / TPOT / throughput / reuse</em></div>
+              <div class="arch-item">request.jsonl<em>请求级时序与命中</em></div>
+              <div class="arch-item">iteration.jsonl<em>batch 与 forward / load / backup latency</em></div>
+            </div>
+          </div>
+        </div>
+
+        <h3>一次离线 replay 的真实调用链</h3>
+        <div class="flow">
+          <div><strong>数据集读取</strong><br><span class="mini">按 trace timestamp 排序请求。</span></div>
+          <div><strong>客户端发流</strong><br><span class="mini">请求 payload 带 <code>custom_params.simulation</code>。</span></div>
+          <div><strong>请求收齐</strong><br><span class="mini">OFFLINE 模式放入 <code>FUTURE_QUEUE</code>。</span></div>
+          <div><strong>按时钟释放</strong><br><span class="mini">到达时间满足后进入 SGLang scheduler。</span></div>
+          <div><strong>真实调度</strong><br><span class="mini">形成 prefill/decode batch，Radix 计算 cached tokens。</span></div>
+          <div><strong>batch 抽象</strong><br><span class="mini">转为 <code>FakeRequest(input, past_kv)</code>。</span></div>
+          <div><strong>耗时预测</strong><br><span class="mini">AIConfigurator 对静态 runtime config 求 latency。</span></div>
+          <div><strong>缓存迁移</strong><br><span class="mini">估算 H2D/D2H 与 storage prefetch 时间。</span></div>
+          <div><strong>推进时钟</strong><br><span class="mini">处理计算与 I/O 的重叠/串行关系。</span></div>
+          <div><strong>输出统计</strong><br><span class="mini">请求、iteration 与聚合指标落盘。</span></div>
+        </div>
+
+        <h3>最值得先读的源码</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>路径</th><th>责任</th><th>学习时回答的问题</th></tr></thead>
+            <tbody>
+              <tr><td class="file"><a href="../src/hisim/simulation/sglang/launch_server.py">simulation/sglang/launch_server.py</a></td><td>安装 hook 并启动 SGLang</td><td>为什么必须在导入目标类之前安装 hook？</td></tr>
+              <tr><td class="file"><a href="../src/hisim/hook/class_hook_entry.py">hook/class_hook_entry.py</a></td><td>拦截 <code>builtins.__build_class__</code></td><td>目标类匹配失败时会静默退化成什么？</td></tr>
+              <tr><td class="file"><a href="../src/hisim/simulation/sglang/sglang_hook.py">simulation/sglang/sglang_hook.py</a></td><td>ModelRunner、Scheduler、HiCache 核心 hook</td><td>哪些行为来自真实 SGLang，哪些被 HiSim 替换？</td></tr>
+              <tr><td class="file"><a href="../src/hisim/simulation/sglang/sglang_mock_class.py">simulation/sglang/sglang_mock_class.py</a></td><td>mock allocator、KV pool、host、storage</td><td>容量、布局、传输、命中分别在哪一层建模？</td></tr>
+              <tr><td class="file"><a href="../src/hisim/time_predictor/base.py">time_predictor/base.py</a></td><td>统一 batch / predictor 契约</td><td>现有 batch 特征是否足以描述 chunked prefill、混合 batch？</td></tr>
+              <tr><td class="file"><a href="../src/hisim/time_predictor/aiconfigurator.py">time_predictor/aiconfigurator.py</a></td><td>模型/并行配置到算子性能数据库</td><td>平均序列长度近似在哪些 workload 上会失真？</td></tr>
+              <tr><td class="file"><a href="../src/hisim/simulation/manager/state.py">simulation/manager/state.py</a></td><td>全局仿真状态</td><td>当前时钟能否表达多个并发 DMA engine 和 SSD queue？</td></tr>
+              <tr><td class="file"><a href="../src/hisim/simulation/utils.py">simulation/utils.py</a></td><td>KV 容量与指标</td><td>命中率、prefetch ratio 与端到端收益有什么差别？</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout warning">
+          <strong>读代码时最容易犯的错误：</strong>把注册表里的硬件名称等同于“已支持且已验证”。注册一个 <code>AcceleratorInfo</code> 只能让容量和理论带宽查询成功；没有对应的 predictor database、实机 profile、scale factor 和端到端误差报告，就不能声称该硬件已有高保真仿真。
+        </div>
+      </section>
+
+      <section id="capability">
+        <p class="section-kicker">Evidence & gaps</p>
+        <h2>2. 当前能力、已有实验与关键缺口</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>维度</th><th>当前证据</th><th>成熟度</th><th>投稿前缺口</th></tr></thead>
+            <tbody>
+              <tr><td>Serving backend</td><td>SGLang v0.5.6.post2 class hooks；配置解析仅接受 <code>backend == "sglang"</code></td><td><span class="status partial">单后端可运行</span></td><td>把框架事件归一为 backend-neutral IR；补 vLLM adapter。</td></tr>
+              <tr><td>GPU/加速器</td><td>H20 数据库与 H100 场景；本地注册 RTX4090、Ascend910B、Ascend950</td><td><span class="status partial">名称多，校准少</span></td><td>RTX4090/910C 的实测数据库与误差报告；910C 尚未注册。</td></tr>
+              <tr><td>模型</td><td>运行时 HF config 优先；内置 Qwen/DeepSeek fallback</td><td><span class="status partial">结构解析较好</span></td><td>混合注意力、MLA、MoE 通信和量化组合的系统验证。</td></tr>
+              <tr><td>推理耗时</td><td>AIConfigurator + prefill/decode scale factor；部分 decode XGBoost 修正</td><td><span class="status partial">核心已存在</span></td><td>训练/验证集严格隔离；P50/P95 分布而非单点均值；跨 batch shape 外推检测。</td></tr>
+              <tr><td>HBM/DRAM</td><td>mock pool；H2D/D2H 由有效带宽和固定启动延迟估计</td><td><span class="status partial">简化模型</span></td><td>双向并发、copy engine 数量、NUMA/pinned memory、计算竞争；<code>memory_capacity_gb</code> 尚未由 ConfigManager 接入。</td></tr>
+              <tr><td>SSD/storage</td><td>按 bytes/bandwidth 的 prefetch；set/file 或 KVCM optimizer</td><td><span class="status partial">功能性路径</span></td><td>队列深度、IOPS、块大小、尾延迟、读写争用；<code>disk_capacity_gb</code> 未接入且 mock set/file 没有容量驱逐。</td></tr>
+              <tr><td>驱逐策略</td><td>SGLang radix 可做 LRU/LFU；KVCM Optimizer 有 LRU/RandomLRU/LeafAwareLRU/TTL</td><td><span class="status partial">两套策略面</span></td><td>统一策略 API；FIFO 缺失；明确框架 HBM 策略和外部 cache 策略的作用域。</td></tr>
+              <tr><td>分层缓存</td><td>KVCM Optimizer 已有 per-tier 命中统计和 tier strategy 配置</td><td><span class="status partial">文档称不完备</span></td><td>与 HiSim 时间模型联动，让“命中”真正转化成迁移/等待/重算代价。</td></tr>
+              <tr><td>Instance 隔离</td><td>KVCM 索引按 <code>instance_id</code> 分离</td><td><span class="status done">系统硬约束</span></td><td>HiSim <code>MockHiCacheStorage</code> 的 KVCM 路径仍硬编码单一 ID；本地 set 路径也缺 namespace。</td></tr>
+              <tr><td>结果与可复现</td><td>metrics/request/iteration；LLMServingSim 转换与 smoke/matrix 脚本</td><td><span class="status partial">已有良好基础</span></td><td>统一 manifest、seed、版本、硬件元数据、统计置信区间与 artifact 一键运行。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>现有本地实验能说明什么</h3>
+        <div class="grid two">
+          <article class="card">
+            <h4>ShareGPT 300</h4>
+            <p>cold prefix reuse 约 4.7%；warm storage prefetch 约 29%。这表明 HiCache 路径被触发，但 warm TPOT/E2E 未必更好，说明“更高命中率”不等于“更好系统性能”。</p>
+          </article>
+          <article class="card">
+            <h4>SWE-bench agentic trace</h4>
+            <p>40 请求 cold/warm prefix reuse 约 91.4%/94.9%；300 请求 warm 的 prefix reuse 反而下降，但延迟明显改善。它再次证明必须联合观察队列、L2 load、prefetch 和 E2E。</p>
+          </article>
+        </div>
+        <p class="mini">这些数值来自当前工作区已生成报告，只能作为功能性 baseline，不能替代与真实硬件对齐的精度实验；现有 H100 结果依赖 predictor 数据和配置假设。</p>
+
+        <div class="callout danger">
+          <strong>必须先修的正确性问题：</strong>① <code>MockHiCacheStorage.init_kvcm()</code> 当前把所有请求写入固定的 <code>instance_id</code>，多实例实验可能产生跨 Instance 复用假象；正确 key 至少应包含 <code>instance_id + model/KV schema fingerprint + prefix block hash</code>。② <code>ConfigManager.get_kv_cache_bytes()</code> 及 per-layer 版本当前乘的是模型 <code>data_type.bytes</code>，而不是 <code>kv_cache_data_type.bytes</code>；例如 FP8 权重 + FP16 KV 会低估一半迁移字节数。修复并重跑验证前，现有 L2 迁移时长只能视为功能性结果。
+        </div>
+      </section>
+
+      <section id="learning">
+        <p class="section-kicker">Learning by building</p>
+        <h2>3. 8 个实验室：真正学会 HiSim</h2>
+        <p class="section-intro">每个 Lab 都要求输出一个可检查的产物。不要只读代码；用 trace、日志和断点把框架控制流与仿真时间一一对应。</p>
+
+        <div class="grid two">
+          <article class="card accent">
+            <h3>Lab 1 · 跑通最小闭环（0.5 天）</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="lab1-smoke" id="lab1-smoke"><label for="lab1-smoke">运行 40-request smoke，保存 server log、metrics、request、iteration。</label></li>
+              <li><input type="checkbox" data-task="lab1-trace" id="lab1-trace"><label for="lab1-trace">选一个 request，手工画出 created → queue → prefill → decode → finish 时间线。</label></li>
+            </ul>
+            <p class="mini">验收：能解释 wall-clock benchmark duration 与 simulated duration 为什么不同。</p>
+          </article>
+          <article class="card accent">
+            <h3>Lab 2 · Hook 机制（0.5 天）</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="lab2-hook" id="lab2-hook"><label for="lab2-hook">用现有 hook demo 验证 class hook 与 module hook 的安装顺序。</label></li>
+              <li><input type="checkbox" data-task="lab2-map" id="lab2-map"><label for="lab2-map">列出每个 hook 替换的 SGLang 方法及其 fallback 行为。</label></li>
+            </ul>
+            <p class="mini">验收：能回答升级 SGLang 后哪三类 API 漂移最危险。</p>
+          </article>
+          <article class="card accent">
+            <h3>Lab 3 · 调度与仿真时钟（1 天）</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="lab3-queue" id="lab3-queue"><label for="lab3-queue">构造 3 个有间隔的请求，逐 iteration 对照 FUTURE_QUEUE 与 global clock。</label></li>
+              <li><input type="checkbox" data-task="lab3-mode" id="lab3-mode"><label for="lab3-mode">比较 OFFLINE 与 BLOCKING 的语义，不比较宿主 CPU 运行时间。</label></li>
+            </ul>
+            <p class="mini">验收：输出一张 iteration Gantt 图。</p>
+          </article>
+          <article class="card accent">
+            <h3>Lab 4 · Predictor（1 天）</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="lab4-shape" id="lab4-shape"><label for="lab4-shape">扫 batch size、ISL、prefix、OSL，画 prefill/decode latency surface。</label></li>
+              <li><input type="checkbox" data-task="lab4-error" id="lab4-error"><label for="lab4-error">识别数据库外插点，并记录 predictor 是否给出不确定性。</label></li>
+            </ul>
+            <p class="mini">验收：说明“平均 past_kv_length”近似对长尾 batch 的偏差方向。</p>
+          </article>
+          <article class="card accent">
+            <h3>Lab 5 · KV 容量与 Radix 命中（1 天）</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="lab5-kv" id="lab5-kv"><label for="lab5-kv">手算一个模型每 token KV bytes，并与 <code>calc_kv_cache_cell_elems</code> 对齐。</label></li>
+              <li><input type="checkbox" data-task="lab5-pressure" id="lab5-pressure"><label for="lab5-pressure">扫 <code>max_total_tokens</code>，观察 eviction、reuse 与 TTFT。</label></li>
+            </ul>
+            <p class="mini">验收：区分 prompt prefix overlap、HBM radix hit、外部 storage hit。</p>
+          </article>
+          <article class="card accent">
+            <h3>Lab 6 · DRAM/SSD 迁移（1 天）</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="lab6-bandwidth" id="lab6-bandwidth"><label for="lab6-bandwidth">扫 DRAM/SSD bandwidth，确认延迟变化的单调性与拐点。</label></li>
+              <li><input type="checkbox" data-task="lab6-overlap" id="lab6-overlap"><label for="lab6-overlap">对 best_effort / wait_complete / timeout 画计算—I/O 重叠图。</label></li>
+            </ul>
+            <p class="mini">验收：找出当前全局时钟无法表达的并发情况。</p>
+          </article>
+          <article class="card accent">
+            <h3>Lab 7 · KVCM Optimizer（1 天）</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="lab7-policy" id="lab7-policy"><label for="lab7-policy">同一 trace 对比 LRU/RandomLRU/LeafAwareLRU/TTL。</label></li>
+              <li><input type="checkbox" data-task="lab7-instance" id="lab7-instance"><label for="lab7-instance">构造两个 instance_id，验证同 token prefix 绝不跨实例命中。</label></li>
+            </ul>
+            <p class="mini">验收：输出 token-weighted、block-weighted、per-tier 三套命中率。</p>
+          </article>
+          <article class="card research">
+            <h3>Lab 8 · 复现实机（2–3 天）</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="lab8-real" id="lab8-real"><label for="lab8-real">在一台真实目标机上采集相同 trace、配置和版本的 TTFT/TPOT/iteration。</label></li>
+              <li><input type="checkbox" data-task="lab8-validate" id="lab8-validate"><label for="lab8-validate">严格分 calibration trace 与 validation trace，报告 MAPE、P95 error。</label></li>
+            </ul>
+            <p class="mini">验收：若错误无法解释，先修模型再扩硬件。</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="target">
+        <p class="section-kicker">To-be architecture</p>
+        <h2>4. 目标：backend-neutral 的事件驱动仿真内核</h2>
+        <p class="section-intro">
+          继续为每个框架复制一套全局状态和缓存逻辑，会很快失控。目标架构应把“框架如何形成 batch”和“batch 在硬件/缓存层上花多久”分离，同时允许保留 framework-in-the-loop 的高保真控制流。
+        </p>
+
+        <div class="architecture">
+          <div class="arch-row">
+            <div class="arch-label">Frontend adapters</div>
+            <div class="arch-items">
+              <div class="arch-item">SGLangAdapter<em>把 hook 事件转成统一 IR</em></div>
+              <div class="arch-item">VLLMAdapter<em>scheduler / worker / KVConnector 事件</em></div>
+              <div class="arch-item">TraceOnlyAdapter<em>用于快速策略搜索与回归</em></div>
+            </div>
+          </div>
+          <div class="arch-row">
+            <div class="arch-label">Simulation core</div>
+            <div class="arch-items">
+              <div class="arch-item">EventQueue<em>timestamp + resource + dependency</em></div>
+              <div class="arch-item">Request/Batch IR<em>框架无关的请求和 iteration</em></div>
+              <div class="arch-item">Resource calendars<em>compute / DMA / PCIe / SSD queues</em></div>
+            </div>
+          </div>
+          <div class="arch-row">
+            <div class="arch-label">Models</div>
+            <div class="arch-items">
+              <div class="arch-item">ComputePredictor<em>AIC / table / learned residual</em></div>
+              <div class="arch-item">TransferModel<em>size, direction, QD, contention</em></div>
+              <div class="arch-item">CapacityModel<em>HBM/DRAM/SSD bytes and fragmentation</em></div>
+            </div>
+          </div>
+          <div class="arch-row">
+            <div class="arch-label">Cache control</div>
+            <div class="arch-items">
+              <div class="arch-item">PlacementPolicy<em>admit / promote / demote / evict</em></div>
+              <div class="arch-item">PrefetchPolicy<em>what / when / where / budget</em></div>
+              <div class="arch-item">NamespaceGuard<em>instance_id + schema fingerprint</em></div>
+            </div>
+          </div>
+          <div class="arch-row">
+            <div class="arch-label">Observability</div>
+            <div class="arch-items">
+              <div class="arch-item">Event trace<em>可重放、可画 Gantt</em></div>
+              <div class="arch-item">Metrics<em>SLO / goodput / bytes / hit taxonomy</em></div>
+              <div class="arch-item">Experiment manifest<em>版本、seed、profile hash</em></div>
+            </div>
+          </div>
+        </div>
+
+        <h3>最小事件集合</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>事件</th><th>关键字段</th><th>占用资源</th><th>完成后动作</th></tr></thead>
+            <tbody>
+              <tr><td><code>REQUEST_ARRIVE</code></td><td>request_id, instance_id, tokens, deadline</td><td>scheduler CPU（可先忽略耗时）</td><td>进入 frontend scheduler</td></tr>
+              <tr><td><code>CACHE_LOOKUP</code></td><td>prefix blocks, tier, namespace</td><td>metadata service / local index</td><td>产生 hit/miss 与候选 load</td></tr>
+              <tr><td><code>BATCH_READY</code></td><td>phase, requests, token counts, parallel config</td><td>无</td><td>安排 load 与 compute 依赖</td></tr>
+              <tr><td><code>TRANSFER</code></td><td>src/dst tier, bytes, segments, priority</td><td>DMA/PCIe/NUMA/NVMe queue</td><td>更新 block residency</td></tr>
+              <tr><td><code>COMPUTE</code></td><td>prefill/decode, batch features, model</td><td>accelerator + collectives</td><td>产生 KV blocks / output token</td></tr>
+              <tr><td><code>CACHE_WRITE</code></td><td>blocks, destination, async/sync</td><td>对应 copy/IO resource</td><td>writing → serving</td></tr>
+              <tr><td><code>EVICT</code></td><td>victims, reason, tier</td><td>metadata；若 write-back 则有 transfer</td><td>serving → deleting / lower tier</td></tr>
+              <tr><td><code>REQUEST_FINISH</code></td><td>latencies, output length, SLO</td><td>无</td><td>统计与缓存保留决策</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>必须编码成断言的系统不变量</h3>
+        <div class="grid three">
+          <div class="card"><h4>Namespace</h4><p><code>match(a,b) ⇒ a.instance_id == b.instance_id</code>；即使 token、模型名、hash 完全相同也不可跨 Instance 复用。</p></div>
+          <div class="card"><h4>Schema</h4><p>同一 Instance 内模型/KV dtype、block size、TP/PP、layout 必须固定；变化时建立新 instance 或新 schema generation。</p></div>
+          <div class="card"><h4>Residency</h4><p>只有 <code>serving</code> 状态的完整 LocationSpec 才能命中；writing/deleting 不可被读取。</p></div>
+          <div class="card"><h4>Capacity</h4><p>每次事件后各 tier resident bytes 不超过容量；同时统计元数据与碎片开销。</p></div>
+          <div class="card"><h4>Causality</h4><p>事件完成时间不早于依赖完成时间；同一资源上的冲突事件必须串行或按明确定义共享带宽。</p></div>
+          <div class="card"><h4>Prefix</h4><p>命中必须是从根开始的连续合法前缀；不能把不连续块数直接等价成可跳过的 prefill tokens。</p></div>
+        </div>
+      </section>
+
+      <section id="hardware">
+        <p class="section-kicker">Cross-accelerator modeling</p>
+        <h2>5. H100/H20、RTX 4090、Ascend 910C 如何建模</h2>
+        <p class="section-intro">
+          不把峰值 TFLOPS/带宽直接当预测器。每个平台都走同一套“静态事实 → 微基准 → iteration profile → 校准 → 独立验证”的 onboarding protocol。厂商未公开或不可信的 910C 参数，用实测黑盒 profile 代替猜值。
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>平台</th><th>仓库当前状态</th><th>投稿可用条件</th><th>主要风险</th></tr></thead>
+            <tbody>
+              <tr><td>H20</td><td><span class="status partial">外部 AIC 数据包 + 配置</span></td><td>补充真实 serving validation，冻结驱动/框架/模型版本。</td><td>现有 scale factor 是否对未见 workload 仍成立。</td></tr>
+              <tr><td>H100 SXM</td><td><span class="status partial">场景配置 + AIC system</span></td><td>作为最先闭环的 reference platform。</td><td>配置中的 8 GB/s storage、64 GB/s host bandwidth 是场景假设，不是 H100 固有属性。</td></tr>
+              <tr><td>RTX 4090</td><td><span class="status partial">本地注册表已有 24 GB / 1008 GB/s</span></td><td>新建 profile bundle、场景 config、实机 validation。</td><td>无 NVLink、24 GB 容量、GeForce 软件栈与数据中心 GPU 差异显著；理论 FLOPS 容易误导。</td></tr>
+              <tr><td>Ascend 910C</td><td><span class="status missing">未注册；仅有本地 910B/950 条目</span></td><td>以真实机器采集 CANN/框架 iteration profile；注册数据注明来源与置信度。</td><td>公开可核验规格有限；AIConfigurator 后端未必直接支持；算子、通信和内存语义与 CUDA 不同。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>统一 Profile Bundle</h3>
+        <pre><code>profiles/&lt;platform&gt;/&lt;engine&gt;/&lt;version&gt;/
+├── manifest.json              # 机器、驱动/CANN/CUDA、频率、NUMA、commit、时间
+├── compute_prefill.csv        # model,dtype,tp,bs,total_tokens,prefix,p50,p95
+├── compute_decode.csv         # model,dtype,tp,bs,context_stats,p50,p95
+├── h2d_d2h.csv                # bytes,segments,direction,pinned,concurrency,p50,p95
+├── storage_io.csv             # bytes,qd,read_write,mount/filesystem,p50,p95
+├── collective.csv             # op,size,world_size,topology,p50,p95
+└── validation_traces/         # 从未参与拟合的端到端 traces</code></pre>
+
+        <h3>微基准矩阵</h3>
+        <div class="grid two">
+          <article class="card">
+            <h4>计算与通信</h4>
+            <ul>
+              <li>prefill：batch size × total prompt tokens × prefix length × chunk size。</li>
+              <li>decode：batch size × context length 分布，不只记录平均值。</li>
+              <li>TP/PP/EP：all-reduce/all-to-all 的消息大小与 topology。</li>
+              <li>模型：至少一个 dense（Qwen3-8B）与一个较大/稀疏模型。</li>
+              <li>dtype：模型权重 dtype 与 KV dtype 分开扫描。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h4>数据移动</h4>
+            <ul>
+              <li>H2D/D2H：4 KB 到数 GB、连续/分段、pinned/pageable、并发流。</li>
+              <li>DRAM：单/双路 NUMA、socket-local/remote、内存压力。</li>
+              <li>SSD：块大小、queue depth、direct/buffered I/O、冷/热 page cache。</li>
+              <li>重叠：compute + H2D、compute + D2H、read + write 同时发生。</li>
+              <li>尾延迟：P50/P95/P99，不能只用最大带宽。</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>模型结构：先可解释，再学 residual</h3>
+        <div class="formula">T<sub>event</sub> = T<sub>analytical/profile lookup</sub>(features) × scale + f<sub>residual</sub>(features), &nbsp;并为外插点输出 uncertainty / out-of-domain 标志。</div>
+        <ul>
+          <li>基础层：AIConfigurator、查表插值或 roofline-like 可解释模型。</li>
+          <li>残差层：只拟合系统误差，不让 XGBoost 隐式吞掉所有物理语义。</li>
+          <li>训练/测试：按 workload/model/config 分组切分，禁止同一 trace 的相邻 batch 同时出现在训练和测试。</li>
+          <li>报告：iteration latency MAPE、端到端 TTFT/TPOT MAPE、P95 absolute percentage error、Spearman 排序相关性。</li>
+        </ul>
+
+        <div class="callout warning">
+          <strong>910C 的建议路径：</strong>若 2026-07-26 前无法获得稳定机器、CANN 版本和 profiling 权限，9 月稿件不要把 910C 放进主结论；可以把它作为“新后端接入方法”或 appendix case study。用 910B 的理论规格代替 910C 会直接伤害可信度。
+        </div>
+      </section>
+
+      <section id="vllm">
+        <p class="section-kicker">Framework integration</p>
+        <h2>6. vLLM 接入：复用 Connector，但不要混淆两件事</h2>
+        <p class="section-intro">
+          仓库已有 <code>kv_cache_manager/py_connector/vllm</code>，实现了 vLLM V1 的 KVCM 数据传输与 location 查询。这说明真实数据面已经有接点；但 HiSim 的仿真层仍只有 SGLang。接入 vLLM 需要新增仿真 adapter，不能只把 benchmark 的 <code>--backend</code> 改成 vLLM。
+        </p>
+
+        <div class="grid two">
+          <article class="card accent">
+            <h3>已有真实 Connector</h3>
+            <ul>
+              <li><code>TairKvCacheConnector</code> 继承 vLLM <code>KVConnectorBase_V1</code>。</li>
+              <li><code>get_num_new_matched_tokens()</code> 查询外部前缀。</li>
+              <li><code>register_kv_caches()</code> 获取 paged KV buffers。</li>
+              <li><code>start_load_kv()</code>、<code>save_kv_layer()</code>、<code>request_finished()</code> 处理数据生命周期。</li>
+              <li>配置显式携带 <code>instance_id</code>，这是正确的 namespace 来源。</li>
+            </ul>
+          </article>
+          <article class="card research">
+            <h3>需要新增的 Simulation Adapter</h3>
+            <ul>
+              <li>捕获 vLLM scheduler 输出、request/block table、computed tokens。</li>
+              <li>绕过真实模型权重与 attention kernel，同时保持 scheduler 可运行。</li>
+              <li>把 vLLM batch 转换为统一 <code>BatchIR</code>。</li>
+              <li>把 connector load/save 变成离散事件，不做真实大块复制。</li>
+              <li>把 predictor latency 回灌到仿真时钟与请求统计。</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>推荐三阶段实现</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>阶段</th><th>实现</th><th>验收</th><th>是否进 9 月论文</th></tr></thead>
+            <tbody>
+              <tr><td>V0 · Trace extraction</td><td>在真实 vLLM 中只记录 request arrival、scheduler batch、block hit/load/save；离线交给 HiSim core。</td><td>同 trace 的 batch sequence 与真实运行一致。</td><td><span class="status done">优先</span></td></tr>
+              <tr><td>V1 · In-process mock worker</td><td>保留 scheduler 和 KVConnector，mock model execution；用 predictor 推进逻辑时钟。</td><td>CPU 上端到端完成请求，指标与 SGLang backend 同 schema。</td><td><span class="status partial">争取</span></td></tr>
+              <tr><td>V2 · Full framework-in-loop</td><td>支持多 worker/TP、异步 layerwise load/save、版本兼容。</td><td>跨框架 policy ranking 稳定，且模拟加速比显著。</td><td><span class="status proposed">投稿后可继续</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>vLLM V1 关键语义映射</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>vLLM 接口/对象</th><th>HiSim IR</th><th>注意点</th></tr></thead>
+            <tbody>
+              <tr><td><code>get_num_new_matched_tokens</code></td><td><code>CACHE_LOOKUP</code> + <code>matched_prefix_tokens</code></td><td>只计算当前确实可加载的最长连续前缀；异步 pending 状态要建模。</td></tr>
+              <tr><td><code>update_state_after_alloc</code></td><td><code>CACHE_ALLOC</code></td><td>记录外部 tokens 与本地 blocks 的映射。</td></tr>
+              <tr><td><code>start_load_kv</code> / <code>wait_for_layer_load</code></td><td><code>TRANSFER</code> dependencies</td><td>支持 layerwise pipeline；等待点决定是否进入关键路径。</td></tr>
+              <tr><td><code>save_kv_layer</code> / <code>wait_for_save</code></td><td><code>CACHE_WRITE</code></td><td>防止 paged buffer 重用早于保存完成。</td></tr>
+              <tr><td>scheduler output</td><td><code>BatchIR</code></td><td>prefill/decode/chunked prefill、scheduled token 数与 context distribution。</td></tr>
+              <tr><td><code>request_finished</code></td><td><code>REQUEST_FINISH</code></td><td>在 block free 前决定保存/保留并输出事件。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="cache">
+        <p class="section-kicker">Policy & hierarchy</p>
+        <h2>7. 从“命中率”走向“有效推理收益”</h2>
+        <p class="section-intro">
+          缓存研究不能只报告 hit rate。一个 SSD 命中可能比重新计算更慢；一个大 prefix 的命中可能占用很多 DRAM；一个预取若错过 deadline 只会制造带宽干扰。策略目标应直接对齐 TTFT、TPOT、goodput、SLO 和数据移动成本。
+        </p>
+
+        <h3>先统一命中率口径</h3>
+        <div class="grid three">
+          <div class="card"><h4>Token-weighted hit</h4><div class="formula">H<sub>token</sub> = Σ hit tokens / Σ input tokens</div><p class="mini">最接近节省的 prefill token 数，但仍未计迁移成本。</p></div>
+          <div class="card"><h4>Block-weighted hit</h4><div class="formula">H<sub>block</sub> = Σ hit blocks / Σ requested blocks</div><p class="mini">便于研究 metadata/eviction，但最后不足一个 block 的 token 要单独处理。</p></div>
+          <div class="card"><h4>Effective hit</h4><div class="formula">H<sub>eff</sub> = Σ max(T<sub>recompute</sub> − T<sub>load</sub> − T<sub>stall</sub>, 0) / Σ T<sub>recompute</sub></div><p class="mini">表示真正节省的归一化计算时间，可进一步按 SLO 权重。</p></div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>策略</th><th>优点</th><th>缺点</th><th>在本项目的状态</th><th>实现建议</th></tr></thead>
+            <tbody>
+              <tr><td>FIFO</td><td>简单、低开销、稳定 baseline</td><td>忽略访问和 prefix 结构</td><td><span class="status missing">KVCM 工厂未见</span></td><td>维护写入序号；命中不刷新；加入策略单测。</td></tr>
+              <tr><td>LRU</td><td>局部性强时有效；成熟 baseline</td><td>scan pollution；不感知 size/load cost</td><td><span class="status done">SGLang/KVCM 均有相关路径</span></td><td>明确 HBM radix LRU 与外部 tier LRU 是不同作用域。</td></tr>
+              <tr><td>LFU</td><td>保留长期热点</td><td>冷启动、陈旧热点、计数开销</td><td><span class="status partial">SGLang radix 实验可用，KVCM 工厂未见</span></td><td>实现 aging/windowed LFU，避免无限累积。</td></tr>
+              <tr><td>RandomLRU</td><td>降低精确 LRU 元数据成本</td><td>方差与 sample rate 敏感</td><td><span class="status done">KVCM 已有</span></td><td>报告元数据/CPU overhead，而非只报告 hit。</td></tr>
+              <tr><td>LeafAwareLRU</td><td>利用 prefix tree，减少驱逐共享祖先</td><td>可能保留低价值内部节点</td><td><span class="status done">KVCM 已有</span></td><td>与 subtree reuse probability 联合。</td></tr>
+              <tr><td>TTL</td><td>生命周期明确，适合 session/cache freshness</td><td>TTL 调参困难；时间语义敏感</td><td><span class="status done">KVCM 已有滑动/固定窗口语义</span></td><td>按 workload session gap 分布选 TTL，避免测试泄漏。</td></tr>
+              <tr><td>GDSF / GreedyDual-Size</td><td>显式考虑 size 与 cost</td><td>需要可靠 cost estimate</td><td><span class="status proposed">建议 baseline</span></td><td>把 load/recompute time 作为 cost；为多级 tier 扩展。</td></tr>
+              <tr><td>论文新策略</td><td>联合 reuse、deadline、size、tier cost</td><td>特征与预测误差可能造成反效果</td><td><span class="status proposed">核心研究</span></td><td>先用 oracle upper bound，后做轻量在线估计。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>建议的新策略：Deadline-aware Reuse Value（暂名 DRV）</h3>
+        <div class="formula">Value(b, i→j) = P<sub>reuse</sub>(b, Δt) · [T<sub>recompute</sub>(b) − T<sub>load</sub>(b, j→HBM)] − λ·Bytes(b) − μ·Interference(j)</div>
+        <ul>
+          <li><strong>Admission：</strong>只有预期净收益为正才进入 DRAM/SSD，避免 write amplification。</li>
+          <li><strong>Placement：</strong>按 value density（收益/byte）选择 tier；高价值、近期 deadline 放 DRAM，低价值长尾放 SSD 或不缓存。</li>
+          <li><strong>Eviction：</strong>每 tier 驱逐最低 value density；prefix ancestor 加 subtree dependent bonus。</li>
+          <li><strong>Promotion：</strong>低层命中后，仅在预计再次复用且 DRAM/HBM 有预算时向上提升。</li>
+          <li><strong>Prefetch：</strong>满足 <code>predicted_ready_time ≤ compute_need_time</code> 且不挤占更高价值 transfer。</li>
+          <li><strong>降级：</strong>预测器不确定性高时回退到 LRU/GDSF，避免 learned policy 灾难性失误。</li>
+        </ul>
+
+        <h3>HBM–DRAM–SSD 的状态机</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>转换</th><th>触发</th><th>是否阻塞请求</th><th>需要建模</th></tr></thead>
+            <tbody>
+              <tr><td>HBM → DRAM</td><td>evict/write-through/background backup</td><td>取决于 buffer 生命周期与 copy 完成点</td><td>D2H、copy engine、pinned memory、compute overlap</td></tr>
+              <tr><td>DRAM → HBM</td><td>命中/load/prefetch</td><td>数据未在 attention 使用前到达则阻塞</td><td>H2D、分层 load、batch fragmentation</td></tr>
+              <tr><td>DRAM → SSD</td><td>demotion/write-through</td><td>通常异步，但占带宽/queue</td><td>write QD、tail latency、write amplification</td></tr>
+              <tr><td>SSD → DRAM</td><td>prefetch/on-demand</td><td>wait_complete 阻塞；best_effort 可能部分完成</td><td>read QD、page cache、并发读写争用</td></tr>
+              <tr><td>任意 tier → delete</td><td>capacity/TTL/invalidation</td><td>通常不阻塞；metadata 有一致性窗口</td><td>writing/serving/deleting 状态与失败恢复</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>预取控制器的四个问题</h3>
+        <div class="grid four">
+          <div class="card"><h4>What</h4><p>连续 prefix 的哪些 blocks？优先共享祖先还是当前请求独占后缀？</p></div>
+          <div class="card"><h4>When</h4><p>请求到达、router 预测、排队、上一个 sub-request 完成，哪个时点发起？</p></div>
+          <div class="card"><h4>Where</h4><p>SSD→DRAM 先热身，还是直接 SSD→HBM/GDS？目标 tier 是否有容量？</p></div>
+          <div class="card"><h4>Budget</h4><p>每个 copy/IO engine 的带宽、queue slots 和对关键请求的干扰预算。</p></div>
+        </div>
+      </section>
+
+      <section id="research">
+        <p class="section-kicker">Research framing</p>
+        <h2>8. 论文问题、假设与实验设计</h2>
+
+        <h3>三条可答辩的研究问题</h3>
+        <div class="grid three">
+          <article class="card research"><h4>RQ1 · Fidelity</h4><p>保留真实 serving control flow 的 HiSim，在跨 workload、跨 batch shape、跨硬件时，能否准确预测 TTFT/TPOT/throughput 以及策略排序？</p></article>
+          <article class="card research"><h4>RQ2 · Cache hierarchy</h4><p>何时多级 KVCache 的 load/backup 与 contention 会抵消 prefix reuse 的收益？哪些 workload/hardware regime 决定 break-even point？</p></article>
+          <article class="card research"><h4>RQ3 · Policy</h4><p>联合复用概率、重算成本、迁移 deadline 与容量的策略，是否比 LRU/FIFO/LFU 在不同平台和负载变化下更稳健？</p></article>
+        </div>
+
+        <h3>建议贡献表述（必须用实验兑现）</h3>
+        <ol>
+          <li><strong>一种 framework-in-the-loop 仿真方法：</strong>把 SGLang/vLLM 的真实调度与 cache control 归一到事件 IR，硬件执行与数据移动由可校准模型替换。</li>
+          <li><strong>一种多级 KVCache 成本模型：</strong>同时表达 HBM/DRAM/SSD 容量、并发传输、读写争用、计算重叠和 continuous prefix semantics。</li>
+          <li><strong>一种 deadline-aware reuse-value 策略：</strong>联合 admission、placement、eviction、promotion、prefetch；以 SLO goodput 为目标。</li>
+          <li><strong>跨硬件/框架实证：</strong>给出误差边界、策略适用区间、反例以及可复现实验 artifact。</li>
+        </ol>
+
+        <div class="callout warning">
+          LLMServingSim 2.0 已宣称异构硬件扩展和约 1.9% GPU serving 误差；LMCache、Mooncake、KVDrive 等也覆盖多级缓存。因此新意不能写成“我们首次支持异构硬件/多级 KVCache”。更可信的差异是：<strong>真实框架控制流 + instance-isolated prefix semantics + 可解释的多资源竞争模型 + 策略闭环</strong>，并用明确对比证明它为何需要。
+        </div>
+
+        <h3>实验矩阵（先做分层设计，不做不可控笛卡尔积）</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>层次</th><th>变量</th><th>推荐取值</th><th>目的</th></tr></thead>
+            <tbody>
+              <tr><td>A · 模型验证</td><td>硬件 × 模型 × batch shape</td><td>H100/H20 + 4090 或 910C；Qwen3-8B/32B；prefill/decode surface</td><td>验证 predictor，不掺 cache 策略。</td></tr>
+              <tr><td>B · 端到端 fidelity</td><td>framework × workload × load</td><td>SGLang 必做，vLLM 至少一条；ShareGPT、SWE-bench/agentic、synthetic；0.5/0.8/1.0 saturation</td><td>验证 queue、batch、TTFT/TPOT。</td></tr>
+              <tr><td>C · 策略比较</td><td>capacity × bandwidth × policy</td><td>HBM 10/25/50% working set；DRAM 1×/4×；SSD 2/8/16 GB/s；FIFO/LRU/LFU/GDSF/DRV</td><td>找 break-even 和 policy ranking。</td></tr>
+              <tr><td>D · 鲁棒性</td><td>reuse × burst × prediction error</td><td>prefix reuse 0–95%；arrival CV；±10/20/40% cost error</td><td>证明新策略不会只在理想预测下有效。</td></tr>
+              <tr><td>E · 消融</td><td>去掉单个机制</td><td>no admission / no deadline / no contention / no tree bonus / no uncertainty fallback</td><td>说明收益来自哪里。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Baselines</h3>
+        <ul class="tag-list">
+          <li>真实 SGLang / vLLM</li><li>HiSim current</li><li>LLMServingSim 2.0（若可运行同场景）</li><li>Vidur（适用的 serving 配置）</li><li>No external cache</li><li>LRU</li><li>FIFO</li><li>LFU with aging</li><li>GDSF</li><li>Oracle Belady / future-aware upper bound</li><li>No prefetch</li><li>wait_complete</li><li>best_effort</li>
+        </ul>
+
+        <h3>主指标与统计方法</h3>
+        <div class="grid two">
+          <article class="card">
+            <h4>系统结果</h4>
+            <ul>
+              <li>TTFT P50/P90/P99，TPOT P50/P99，E2E。</li>
+              <li>request/token throughput 与 SLO goodput。</li>
+              <li>queueing、compute、H2D/D2H、SSD stall 分解。</li>
+              <li>每完成 token 的 bytes moved、SSD writes、energy proxy（可选）。</li>
+              <li>仿真加速比、内存开销、事件数。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h4>缓存结果</h4>
+            <ul>
+              <li>local/remote/per-tier token hit 与 effective hit。</li>
+              <li>admission、promotion、demotion、eviction、prefetch accuracy/coverage/timeliness。</li>
+              <li>write amplification、wasted prefetch bytes、tier occupancy。</li>
+              <li>每个 instance_id 独立统计，再做 macro/micro aggregate。</li>
+              <li>至少 5 seeds；bootstrap 95% CI 或明确说明 deterministic replay。</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>论文应提前准备的 8 张图</h3>
+        <ol>
+          <li>动机图：命中率提高但 E2E 变差的反例。</li>
+          <li>系统架构图：framework adapters、event core、hardware/cache models。</li>
+          <li>验证散点：真实 vs 仿真 iteration / TTFT / TPOT。</li>
+          <li>跨硬件误差 CDF：H100/H20 与 4090/910C。</li>
+          <li>break-even heatmap：reuse × storage bandwidth × recompute cost。</li>
+          <li>策略主结果：SLO goodput / P99 TTFT。</li>
+          <li>多级时间线：DRV 如何把 transfer 隐藏在 compute/queue window。</li>
+          <li>消融与开销：预测误差鲁棒性、仿真速度、policy CPU/metadata overhead。</li>
+        </ol>
+      </section>
+
+      <section id="timeline">
+        <p class="section-kicker">Execution calendar</p>
+        <h2>9. 从今天到 2026-09-09 的 59 天计划</h2>
+        <p class="section-intro">每个阶段都有硬验收；未通过就缩 scope，不把不可验证功能带进论文主线。</p>
+
+        <div class="timeline">
+          <article class="milestone">
+            <div class="date">07-12 → 07-16 · 冻结基线与学习</div>
+            <h3>M0：建立可复现基线</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="m0-manifest" id="m0-manifest"><label for="m0-manifest">记录当前 commit、未提交 patch、环境、AIC 数据 hash、SGLang 版本。</label></li>
+              <li><input type="checkbox" data-task="m0-smoke" id="m0-smoke"><label for="m0-smoke">重跑 smoke 和两个 300-request baseline；确认结果可复现。</label></li>
+              <li><input type="checkbox" data-task="m0-defs" id="m0-defs"><label for="m0-defs">冻结指标定义与 instance isolation tests。</label></li>
+            </ul>
+            <p><strong>Exit：</strong>一条命令生成 manifest + metrics + event trace；数值差异有容忍阈值。</p>
+          </article>
+
+          <article class="milestone">
+            <div class="date">07-17 → 07-23 · 仿真内核接口</div>
+            <h3>M1：抽出 BatchIR / Event / Resource</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="m1-ir" id="m1-ir"><label for="m1-ir">定义 backend-neutral IR 和 predictor/transfer/cache policy protocol。</label></li>
+              <li><input type="checkbox" data-task="m1-sglang" id="m1-sglang"><label for="m1-sglang">让现有 SGLang hook 通过 adapter 调用新 core，结果与旧路径等价。</label></li>
+              <li><input type="checkbox" data-task="m1-clock" id="m1-clock"><label for="m1-clock">引入 resource calendar，至少支持 compute 与 H2D/D2H/SSD 的依赖和重叠。</label></li>
+            </ul>
+            <p><strong>Exit：</strong>现有测试通过；3-request 手工时序与模拟一致；不存在负时长/超容量。</p>
+          </article>
+
+          <article class="milestone">
+            <div class="date">07-24 → 07-30 · 硬件 profile</div>
+            <h3>M2：第一平台闭环 + 第二平台采集</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="m2-ref" id="m2-ref"><label for="m2-ref">H100/H20 跑完整 microbench + unseen validation。</label></li>
+              <li><input type="checkbox" data-task="m2-second" id="m2-second"><label for="m2-second">在 4090 或 910C 上得到首个 profile bundle。</label></li>
+              <li><input type="checkbox" data-task="m2-ood" id="m2-ood"><label for="m2-ood">predictor 标记数据库外插并输出 uncertainty。</label></li>
+            </ul>
+            <p><strong>Exit：</strong>reference platform iteration median MAPE 目标 ≤10%，P95 ≤20%；若不满足，解释并修模。</p>
+          </article>
+
+          <article class="milestone critical">
+            <div class="date">07-31 → 08-09 · Go / No-Go 周</div>
+            <h3>M3：第二硬件 + vLLM V0 + 论文两页草稿</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="m3-hw" id="m3-hw"><label for="m3-hw">第二平台至少完成一个模型、两个 workload 的端到端 validation。</label></li>
+              <li><input type="checkbox" data-task="m3-vllm" id="m3-vllm"><label for="m3-vllm">vLLM trace extraction adapter 产生统一 BatchIR。</label></li>
+              <li><input type="checkbox" data-task="m3-two-pages" id="m3-two-pages"><label for="m3-two-pages">完成能独立通过 rapid review 的前两页：问题、洞察、机制、结果 teaser。</label></li>
+            </ul>
+            <p><strong>Go：</strong>两硬件误差可接受且主机制已有初步正向结果。<strong>No-Go：</strong>缩成单硬件深度 cache study，去掉跨硬件强声明。</p>
+          </article>
+
+          <article class="milestone">
+            <div class="date">08-10 → 08-19 · 策略实现</div>
+            <h3>M4：FIFO/LFU/GDSF/DRV 与三层模型</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="m4-baselines" id="m4-baselines"><label for="m4-baselines">统一策略 API；完成 FIFO、aging LFU、GDSF baseline。</label></li>
+              <li><input type="checkbox" data-task="m4-drv" id="m4-drv"><label for="m4-drv">实现 DRV admission/placement/eviction/prefetch 的最小版本。</label></li>
+              <li><input type="checkbox" data-task="m4-oracle" id="m4-oracle"><label for="m4-oracle">实现 oracle 上界，判断还有多少优化空间。</label></li>
+            </ul>
+            <p><strong>Exit：</strong>至少在两个 workload regime 中显著优于 LRU，且没有明显 worst-case 崩溃。</p>
+          </article>
+
+          <article class="milestone">
+            <div class="date">08-20 → 08-27 · 完整实验</div>
+            <h3>M5：主矩阵、消融、误差与开销</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="m5-matrix" id="m5-matrix"><label for="m5-matrix">冻结实验矩阵与 seeds，禁止结果出来后随意改 metric。</label></li>
+              <li><input type="checkbox" data-task="m5-figures" id="m5-figures"><label for="m5-figures">自动生成 8 张论文图和机器可读 CSV/JSON。</label></li>
+              <li><input type="checkbox" data-task="m5-negative" id="m5-negative"><label for="m5-negative">主动寻找新策略输给 baseline 的区域并解释。</label></li>
+            </ul>
+            <p><strong>Exit：</strong>主结果固定；每个 claim 都有图表或测试证据。</p>
+          </article>
+
+          <article class="milestone">
+            <div class="date">08-28 → 09-03 · 写作与内部评审</div>
+            <h3>M6：完整 11 页与 artifact rehearsal</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="m6-draft" id="m6-draft"><label for="m6-draft">完成匿名 11 页初稿，所有图中文字 ≥8pt。</label></li>
+              <li><input type="checkbox" data-task="m6-review" id="m6-review"><label for="m6-review">找 2–3 位系统/体系结构同事做 rapid-review-first 评审。</label></li>
+              <li><input type="checkbox" data-task="m6-artifact" id="m6-artifact"><label for="m6-artifact">在干净环境执行 quick/full artifact 流程。</label></li>
+            </ul>
+            <p><strong>Exit：</strong>陌生读者只看前两页能复述问题、贡献和定量结果。</p>
+          </article>
+
+          <article class="milestone critical">
+            <div class="date">09-04 → 09-09 AoE · 只做收敛</div>
+            <h3>M7：定稿、匿名化、格式与提交</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="m7-freeze" id="m7-freeze"><label for="m7-freeze">09-04 code/data freeze；只修 blocker，不加新 feature。</label></li>
+              <li><input type="checkbox" data-task="m7-anon" id="m7-anon"><label for="m7-anon">检查仓库、PDF metadata、路径、日志、图表中的身份信息。</label></li>
+              <li><input type="checkbox" data-task="m7-format" id="m7-format"><label for="m7-format">acmart sigplan/anonymous/review/nonacm、11 页、US Letter、字体与超链接检查。</label></li>
+              <li><input type="checkbox" data-task="m7-submit" id="m7-submit"><label for="m7-submit">至少提前 24 小时上传并下载复检最终 PDF。</label></li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>投稿后长期路线</h3>
+        <div class="grid three">
+          <div class="card"><h4>2026 Q4</h4><p>vLLM V1 完整 in-loop adapter；Ascend/CANN predictor；多节点 network resource；完善 FIFO/LFU/size-aware policy。</p></div>
+          <div class="card"><h4>2027 Q1</h4><p>PD 分离、router 预取、跨节点 DRAM/SSD pool、在线策略与安全回退；准备 artifact evaluation。</p></div>
+          <div class="card"><h4>2027 Q2+</h4><p>生产 trace 研究、自动硬件 onboarding、策略搜索与容量规划；把 HiSim 变成可维护平台而非论文分支。</p></div>
+        </div>
+      </section>
+
+      <section id="implementation">
+        <p class="section-kicker">Code blueprint</p>
+        <h2>10. 建议的代码实施蓝图</h2>
+        <p class="section-intro">以下是目标布局，不代表这些文件当前已经存在。优先新增小而稳定的核心接口，再把 SGLang 现有代码迁过去，避免直接大改 990/1173 行的 hook/mock 文件。</p>
+
+        <pre><code>hisim/src/hisim/
+├── core/
+│   ├── events.py              # SimEvent / EventQueue / dependencies
+│   ├── clock.py               # ResourceCalendar / logical time
+│   ├── ir.py                  # RequestIR / BatchIR / CacheOpIR
+│   └── simulator.py           # event dispatch + invariant checks
+├── backend/
+│   ├── base.py                # FrameworkAdapter protocol
+│   ├── sglang_adapter.py      # 从现有 sglang_hook 收敛事件
+│   └── vllm_adapter.py        # V0 trace / V1 in-process
+├── hardware/
+│   ├── profile.py             # profile bundle schema + provenance
+│   ├── compute.py             # AIC/table/residual predictor
+│   ├── transfer.py            # H2D/D2H/SSD/network resource model
+│   └── uncertainty.py         # OOD detection
+├── cache/
+│   ├── namespace.py           # instance_id + schema fingerprint
+│   ├── hierarchy.py           # tier capacity/residency/state machine
+│   ├── metrics.py             # hit taxonomy / effective benefit
+│   ├── policy/base.py         # admit/place/evict/promote/prefetch
+│   ├── policy/{fifo,lru,lfu,gdsf}.py
+│   └── policy/drv.py          # proposed mechanism
+└── experiment/
+    ├── manifest.py            # full provenance
+    ├── runner.py              # matrix + seeds + retry
+    └── report.py              # figures/tables/data export</code></pre>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现有文件</th><th>建议改法</th><th>不要做的事</th></tr></thead>
+            <tbody>
+              <tr><td><a href="../src/hisim/simulation/sglang/sglang_hook.py">sglang_hook.py</a></td><td>保留框架 glue；把时钟、指标、策略委托给 core。</td><td>继续向 class 级全局变量堆所有 backend/state。</td></tr>
+              <tr><td><a href="../src/hisim/simulation/sglang/sglang_mock_class.py">sglang_mock_class.py</a></td><td>仅保留兼容 SGLang 接口的轻量 mock；迁移通用传输/层级模型。</td><td>让 mock storage 同时承担 KVCM、策略、时间和 namespace。</td></tr>
+              <tr><td><a href="../src/hisim/simulation/manager/config.py">manager/config.py</a></td><td>配置解析按 backend adapter 注册；加 schema validation。</td><td>继续增长 <code>if backend == ...</code> 分支。</td></tr>
+              <tr><td><a href="../src/hisim/simulation/manager/state.py">manager/state.py</a></td><td>用实例化的 SimulatorState 代替 class-global singleton。</td><td>不同实验/实例共享全局时钟与缓存计数。</td></tr>
+              <tr><td><a href="../../kv_cache_manager/optimizer/eviction_policy/policy_factory.cc">optimizer policy_factory.cc</a></td><td>补 FIFO/LFU/GDSF 或提供可插拔策略边界；保持 C++ 回放与 Python HiSim 语义一致。</td><td>同名策略在两侧实现不同刷新/时间语义。</td></tr>
+              <tr><td><a href="../src/hisim/spec/accelerator/info.py">accelerator/info.py</a></td><td>静态事实带来源/测量日期；profile 与 spec 分离。</td><td>将 proxy device 数据写成目标设备真实性能。</td></tr>
+              <tr><td><a href="../../kv_cache_manager/py_connector/vllm/v1_connector.py">vllm/v1_connector.py</a></td><td>增加事件观测 hook 或 simulation transport adapter，尽量不侵入真实数据路径。</td><td>在 connector 内直接塞入完整 simulator。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>配置 schema 应显式表达的内容</h3>
+        <pre><code>{
+  "experiment": {"id": "...", "seed": 0, "mode": "offline"},
+  "workload": {"path": "...", "instance_id_field": "instance_id"},
+  "backend": {"name": "sglang|vllm", "version": "..."},
+  "model": {"name": "...", "config_hash": "..."},
+  "hardware": {
+    "profile_bundle": "profiles/rtx4090/...",
+    "compute_resources": 1,
+    "copy_engines": {"h2d": 1, "d2h": 1}
+  },
+  "cache": {
+    "namespace": {"instance_id": "required", "schema_fingerprint": "auto"},
+    "tiers": [
+      {"name": "hbm",  "capacity_gb": 20},
+      {"name": "dram", "capacity_gb": 128, "numa_node": 0},
+      {"name": "ssd",  "capacity_gb": 1000, "queue_depth": 32}
+    ],
+    "policy": {"name": "drv", "fallback": "lru"}
+  }
+}</code></pre>
+      </section>
+
+      <section id="quality">
+        <p class="section-kicker">Validation & artifact</p>
+        <h2>11. 验证、测试与可复现标准</h2>
+
+        <div class="grid two">
+          <article class="card">
+            <h3>单元与性质测试</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="q-instance" id="q-instance"><label for="q-instance">同 prefix 不同 instance_id：0 命中；同 instance：按最长连续前缀命中。</label></li>
+              <li><input type="checkbox" data-task="q-capacity" id="q-capacity"><label for="q-capacity">任意随机事件序列后，各 tier 容量不超限、无重复 free、无负 occupancy。</label></li>
+              <li><input type="checkbox" data-task="q-causal" id="q-causal"><label for="q-causal">事件完成时间 ≥ 所有依赖完成时间；resource schedule 不重叠冲突。</label></li>
+              <li><input type="checkbox" data-task="q-policy" id="q-policy"><label for="q-policy">FIFO 命中不刷新；LRU 命中刷新；LFU aging；TTL 两种 refresh 语义。</label></li>
+              <li><input type="checkbox" data-task="q-monotonic" id="q-monotonic"><label for="q-monotonic">无 contention 时，提高 bandwidth/容量不应让同一固定事件序列变慢。</label></li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>分层验证</h3>
+            <ol>
+              <li><strong>组件：</strong>compute predictor、H2D/D2H、SSD 分别与微基准对齐。</li>
+              <li><strong>iteration：</strong>真实 scheduler batch 输入 predictor，比较单 iteration。</li>
+              <li><strong>短 trace：</strong>3–20 request，人工检查 causality 与 cache state。</li>
+              <li><strong>端到端：</strong>固定真实 workload，比较 TTFT/TPOT/throughput distribution。</li>
+              <li><strong>策略排序：</strong>真实系统和仿真对同一组策略的 ranking 是否一致。</li>
+            </ol>
+          </article>
+        </div>
+
+        <h3>精度门槛（目标值，不应反向挑数据满足）</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>指标</th><th>目标</th><th>最低可接受</th><th>失败动作</th></tr></thead>
+            <tbody>
+              <tr><td>iteration latency median MAPE</td><td>≤ 10%</td><td>≤ 15%</td><td>分 prefill/decode/shape 查 residual；收窄支持域。</td></tr>
+              <tr><td>TTFT/TPOT median MAPE</td><td>≤ 10%</td><td>≤ 15%</td><td>检查 queue release、chunked prefill、I/O overlap。</td></tr>
+              <tr><td>P95 latency error</td><td>≤ 20%</td><td>≤ 30%</td><td>引入分布/资源争用；不要用全局 scale 掩盖。</td></tr>
+              <tr><td>policy ranking</td><td>Spearman ≥ 0.9</td><td>top-1 策略一致</td><td>论文只做定性区间，不宣称精确容量规划。</td></tr>
+              <tr><td>simulation speedup</td><td>≥ 20× real-time</td><td>≥ 10×</td><td>减少 framework overhead 或增加 trace-only mode。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Artifact 目录与一键入口</h3>
+        <pre><code>artifact/
+├── README.md                 # 15 分钟 quick start + full reproduction
+├── env/                     # lockfile / container / system requirements
+├── manifests/               # 每张图对应一个 manifest
+├── traces/                  # 可公开/合成/匿名化 trace + schema
+├── profiles/                # 可发布的硬件 profile bundle
+├── scripts/
+│   ├── run_quick.sh          # CPU 小数据验证
+│   ├── run_validation.sh     # 真实机验证（可选硬件）
+│   ├── run_paper.sh          # 主矩阵
+│   └── make_figures.sh
+└── expected/                 # checksums + 容忍区间，不绑定单一浮点结果</code></pre>
+
+        <div class="callout">
+          ASPLOS CFP 明确重视 traces、original data、source code 和 tools，并提供 artifact evaluation。现在就让每张图可由 manifest 重建，不要等录用后再补 artifact。
+        </div>
+      </section>
+
+      <section id="paper">
+        <p class="section-kicker">Paper blueprint</p>
+        <h2>12. ASPLOS 稿件结构与写作策略</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>篇幅</th><th>内容</th><th>必须回答</th></tr></thead>
+            <tbody>
+              <tr><td>0.5 页</td><td>Abstract + intro opening</td><td>重要问题是什么？现有系统为何无法回答？一句定量结果。</td></tr>
+              <tr><td>1.5 页</td><td>Introduction</td><td>三条洞察、三项贡献、结果 teaser；前两页单独可读。</td></tr>
+              <tr><td>1 页</td><td>Background & motivation</td><td>framework control flow、多级 cache 的 break-even 反例、instance semantics。</td></tr>
+              <tr><td>2.5 页</td><td>Design</td><td>IR、event/resource、hardware/cache model、DRV 机制与不变量。</td></tr>
+              <tr><td>1 页</td><td>Implementation</td><td>SGLang/vLLM 接点、代码量、版本、限制，明确实现与模拟部分。</td></tr>
+              <tr><td>3.5 页</td><td>Evaluation</td><td>精度、策略主结果、消融、鲁棒性、开销、反例。</td></tr>
+              <tr><td>0.6 页</td><td>Related work</td><td>与 LLMServingSim/Vidur、LMCache/Mooncake/KVDrive、serving engines 的实质区别。</td></tr>
+              <tr><td>0.4 页</td><td>Limitations & conclusion</td><td>支持域、尚未建模因素、对结论边界的诚实说明。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>候选标题</h3>
+        <ul>
+          <li><strong>HiSim-KV: Framework-in-the-Loop Simulation for Cross-Accelerator Tiered KV Cache Design</strong></li>
+          <li><strong>Hits Are Not Enough: Cost- and Deadline-Aware Multi-Tier KV Cache Simulation for LLM Serving</strong></li>
+          <li><strong>Simulating What the Scheduler Sees: Cross-Framework Evaluation of Tiered KV Cache Policies</strong></li>
+        </ul>
+
+        <h3>Rapid review 前两页检查</h3>
+        <ul class="checklist">
+          <li><input type="checkbox" data-task="p-domain" id="p-domain"><label for="p-domain">明确说明推进了体系结构/OS/存储系统研究，而非只做 LLM 应用 benchmark。</label></li>
+          <li><input type="checkbox" data-task="p-gap" id="p-gap"><label for="p-gap">用一张动机图证明 hit-rate-only 和 bandwidth-only 模型为什么错误。</label></li>
+          <li><input type="checkbox" data-task="p-diff" id="p-diff"><label for="p-diff">一句话对比 LLMServingSim 2.0、Vidur、LMCache/Mooncake/KVDrive。</label></li>
+          <li><input type="checkbox" data-task="p-numbers" id="p-numbers"><label for="p-numbers">贡献项包含真实数字：误差、加速比、SLO/goodput 收益、开销。</label></li>
+          <li><input type="checkbox" data-task="p-honesty" id="p-honesty"><label for="p-honesty">明确哪些是实现、哪些是模拟、哪些硬件真正验证过。</label></li>
+        </ul>
+      </section>
+
+      <section id="risks">
+        <p class="section-kicker">Risk register</p>
+        <h2>13. 主要风险与预先降级方案</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>风险</th><th>早期信号</th><th>缓解</th><th>投稿降级</th></tr></thead>
+            <tbody>
+              <tr><td>硬件不可得，尤其 910C</td><td>07-20 前无稳定排期/权限</td><td>立即用 RTX4090 做第二平台；910C 仅写接入方法。</td><td>不声称 910C 精度。</td></tr>
+              <tr><td>AIConfigurator 不支持 Ascend/CANN</td><td>算子数据库/后端无法运行</td><td>用 framework iteration profile + table interpolation；统一 predictor protocol。</td><td>只验证黑盒 predictor，不做 operator attribution。</td></tr>
+              <tr><td>vLLM mock 侵入过大</td><td>一周仍无法稳定完成请求</td><td>先做 V0 trace extraction；同一个 simulation core 离线重放。</td><td>主文 SGLang，vLLM 作为 portability case。</td></tr>
+              <tr><td>新策略没有稳定收益</td><td>oracle 与 LRU gap 很小</td><td>先画 break-even；转为 characterization/when-to-cache 研究。</td><td>把贡献改成“揭示多级 cache 失效区间 + simulator”。</td></tr>
+              <tr><td>仿真误差大</td><td>validation MAPE >20% 且随 load 变大</td><td>加入资源争用、tail distribution；缩小支持域。</td><td>只报告 ranking/趋势，不做绝对容量结论。</td></tr>
+              <tr><td>跨 Instance 污染</td><td>相同 prefix 在不同 instance 命中</td><td>namespace guard + property tests + per-instance storage。</td><td>这是 correctness blocker，未修不得投稿。</td></tr>
+              <tr><td>实验矩阵爆炸</td><td>预计运行时间超过 72h 或图表不可解释</td><td>分层设计、fractional factorial、先小样本筛选再主矩阵。</td><td>保留两个硬件、两个 workload、关键容量点。</td></tr>
+              <tr><td>前两页不够“ASPLOS”</td><td>内部读者认为只是缓存工程</td><td>围绕资源抽象、体系结构差异、OS cache policy 与实验方法重写。</td><td>推迟而不是提交不成熟稿件，避免 cycle 限制。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="first-week">
+        <p class="section-kicker">Start now</p>
+        <h2>14. 第一周的可执行任务清单</h2>
+        <div class="grid two">
+          <article class="card accent">
+            <h3>Day 1–2：冻结事实</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="w1-status" id="w1-status"><label for="w1-status">把当前未提交改动分成：代码、配置、数据、报告、生成物；不要混在同一个 commit。</label></li>
+              <li><input type="checkbox" data-task="w1-env" id="w1-env"><label for="w1-env">导出 Python/package/SGLang/AIC/driver 环境 manifest。</label></li>
+              <li><input type="checkbox" data-task="w1-baseline" id="w1-baseline"><label for="w1-baseline">重跑最小 smoke，并逐字段验证 metrics 定义。</label></li>
+            </ul>
+          </article>
+          <article class="card accent">
+            <h3>Day 3：修 correctness</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="w1-ns" id="w1-ns"><label for="w1-ns">为 MockHiCacheStorage 引入必填 instance namespace。</label></li>
+              <li><input type="checkbox" data-task="w1-nstest" id="w1-nstest"><label for="w1-nstest">新增跨 instance 不命中、同 instance 可命中的测试。</label></li>
+              <li><input type="checkbox" data-task="w1-reset" id="w1-reset"><label for="w1-reset">storage clear/reset 只作用于目标 instance 或明确的实验 namespace。</label></li>
+            </ul>
+          </article>
+          <article class="card accent">
+            <h3>Day 4–5：定义核心接口</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="w1-ir" id="w1-ir"><label for="w1-ir">写 RequestIR/BatchIR/CacheOpIR dataclass 与 JSON schema。</label></li>
+              <li><input type="checkbox" data-task="w1-predictor" id="w1-predictor"><label for="w1-predictor">把现有 AIC predictor 包进统一接口，输出 value + uncertainty + source。</label></li>
+              <li><input type="checkbox" data-task="w1-event" id="w1-event"><label for="w1-event">用 3 个请求测试最小 EventQueue/ResourceCalendar。</label></li>
+            </ul>
+          </article>
+          <article class="card research">
+            <h3>Day 6–7：论文式验证</h3>
+            <ul class="checklist">
+              <li><input type="checkbox" data-task="w1-motivation" id="w1-motivation"><label for="w1-motivation">从现有 ShareGPT/SWE-bench 结果画第一张“hit 不等于 speedup”动机图。</label></li>
+              <li><input type="checkbox" data-task="w1-hwaccess" id="w1-hwaccess"><label for="w1-hwaccess">确认 H100/H20、4090、910C 的机器所有者、时间窗、软件栈和数据可公开性。</label></li>
+              <li><input type="checkbox" data-task="w1-outline" id="w1-outline"><label for="w1-outline">写一页 problem statement：不写实现流水账，只写问题、洞察、假设、证据。</label></li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>已有 smoke 入口</h3>
+        <pre><code>cd hisim
+bash test/scripts/run_llmservingsim_hisim_smoke.sh
+
+# 关键输出
+test/results/llmservingsim_swebench/hisim_output/metrics.json
+test/results/llmservingsim_swebench/hisim_output/request.jsonl
+test/results/llmservingsim_swebench/hisim_output/iteration.jsonl</code></pre>
+        <p class="mini">具体环境仍以当前仓库 README 和本地依赖为准。运行新实验前先为输出目录和 instance_id 建独立 namespace，避免复用旧 storage keys。</p>
+      </section>
+
+      <section id="references">
+        <p class="section-kicker">Evidence index</p>
+        <h2>15. 资料、源码与论文索引</h2>
+
+        <h3>本仓库</h3>
+        <div class="grid two">
+          <div class="card">
+            <ul>
+              <li><a href="../README_zh.md">HiSim README（中文）</a></li>
+              <li><a href="hisim_architecture_learning_and_vllm_report.md">已有 HiSim 架构/vLLM 评估报告</a></li>
+              <li><a href="../src/hisim_src_file_guide.md">src/hisim 源码导览</a></li>
+              <li><a href="../configs/README.md">HiSim 配置布局</a></li>
+              <li><a href="../test/reports/llmservingsim_sharegpt_300_hicache_report.md">ShareGPT 300 HiCache 报告</a></li>
+              <li><a href="../test/reports/llmservingsim_swebench_hicache_report.md">SWE-bench HiCache 报告</a></li>
+            </ul>
+          </div>
+          <div class="card">
+            <ul>
+              <li><a href="../../docs/design/basic_concepts.md">KVCM 基本概念与 Instance 隔离</a></li>
+              <li><a href="../../docs/optimizer.md">KVCM Optimizer 使用指南</a></li>
+              <li><a href="../../kv_cache_manager/optimizer/docs/optimizer_architecture.md">Optimizer 架构</a></li>
+              <li><a href="../../kv_cache_manager/optimizer/eviction_policy/">驱逐策略源码</a></li>
+              <li><a href="../../kv_cache_manager/optimizer/analysis/tracker/hit_rate_tracker.cc">per-tier 命中率统计</a></li>
+              <li><a href="../../kv_cache_manager/py_connector/vllm/v1_connector.py">vLLM V1 Connector</a></li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>官方规范与接口（核验日期：2026-07-12）</h3>
+        <ul>
+          <li><a href="https://www.asplos-conference.org/asplos2027/cfp/">ASPLOS 2027 Call for Papers</a>：September Cycle 截止 2026-09-09 AoE；rapid review 只看前两页；正文 11 页。</li>
+          <li><a href="https://www.asplos-conference.org/asplos2027/artifact-evaluation/">ASPLOS 2027 Artifact Evaluation</a>：artifact 日程与评估流程。</li>
+          <li><a href="https://docs.vllm.ai/en/stable/api/vllm/distributed/kv_transfer/kv_connector/v1/index.html">vLLM KVConnector V1 API</a>：external KV match、async load、layout 等接口语义。</li>
+          <li><a href="https://docs.vllm.ai/en/stable/api/vllm/distributed/kv_transfer/kv_connector/v1/lmcache_connector/">vLLM LMCacheConnector</a>：layerwise load/save 与 scheduler/worker 协作参考。</li>
+          <li><a href="https://www.nvidia.com/en-us/geforce/graphics-cards/40-series/rtx-4090/">NVIDIA RTX 4090 官方页面</a>：24 GB GDDR6X；具体有效性能仍须实测。</li>
+        </ul>
+
+        <h3>直接相关工作</h3>
+        <ul>
+          <li><a href="https://arxiv.org/abs/2511.07229">LLMServingSim 2.0</a>：异构硬件、trace-driven profiler、现代 serving technique 的重要直接 baseline。</li>
+          <li><a href="https://www.microsoft.com/en-us/research/wp-content/uploads/2024/05/vidur_mlsys24.pdf">Vidur</a>：高保真、可扩展的 LLM serving simulator。</li>
+          <li><a href="https://arxiv.org/abs/2407.00079">Mooncake</a>：KVCache-centric 分离式 serving 与 CPU DRAM/SSD cache。</li>
+          <li><a href="https://docs.lmcache.ai/developer_guide/architecture.html">LMCache Architecture</a>：GPU/CPU/disk/remote 多级 KV cache 的工程基线。</li>
+          <li><a href="https://arxiv.org/abs/2605.18071">KVDrive</a>：HBM/DRAM/SSD 多级 KV 管理与跨层流水的重要新近工作。</li>
+        </ul>
+
+        <div class="callout warning">
+          <strong>资料可信度标记：</strong>截至核验时，没有找到可直接支撑 Ascend 910C 峰值计算、HBM 容量/带宽和互联能力的华为官方公开规格页。因此本文没有填入猜测数值；研究实现应以可追溯的实测 profile 与机器 manifest 为准。
+        </div>
+
+        <p class="mini">本文是规划文档，不是实验结论。标记为“当前”的陈述基于本地工作区源码与报告；标记为“建议/目标/拟议”的内容尚待实现和验证。</p>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      const sidebar = document.getElementById('sidebar');
+      const toggle = document.getElementById('mobileToggle');
+      const checkboxes = [...document.querySelectorAll('input[type="checkbox"][data-task]')];
+      const key = 'hisim-asplos2027-plan-v1';
+
+      toggle.addEventListener('click', () => sidebar.classList.toggle('open'));
+      sidebar.querySelectorAll('a').forEach(a => a.addEventListener('click', () => sidebar.classList.remove('open')));
+
+      let saved = {};
+      try { saved = JSON.parse(localStorage.getItem(key) || '{}'); } catch (_) { saved = {}; }
+      checkboxes.forEach(box => {
+        box.checked = Boolean(saved[box.dataset.task]);
+        box.addEventListener('change', () => {
+          saved[box.dataset.task] = box.checked;
+          localStorage.setItem(key, JSON.stringify(saved));
+          updateProgress();
+        });
+      });
+
+      function updateProgress() {
+        const done = checkboxes.filter(box => box.checked).length;
+        const total = checkboxes.length;
+        const pct = total ? Math.round(done * 100 / total) : 0;
+        document.getElementById('progressText').textContent = pct + '%';
+        document.getElementById('progressCount').textContent = done + ' / ' + total;
+        document.getElementById('progressFill').style.width = pct + '%';
+      }
+      updateProgress();
+
+      const navLinks = [...document.querySelectorAll('.sidebar nav a')];
+      const sections = navLinks.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+      const observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (!entry.isIntersecting) return;
+          navLinks.forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + entry.target.id));
+        });
+      }, { rootMargin: '-15% 0px -72% 0px', threshold: 0 });
+      sections.forEach(section => observer.observe(section));
+    })();
+  </script>
+</body>
+</html>

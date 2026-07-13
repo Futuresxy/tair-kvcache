@@ -40,3 +40,12 @@ class Envs:
     @classmethod
     def reset_hicache_storage(cls) -> bool:
         return os.getenv("HISIM_RESET_HICACHE_STORAGE") == "1"
+
+    @classmethod
+    def hicache_storage_path(cls) -> str:
+        return os.path.realpath(
+            os.getenv(
+                "HISIM_HICACHE_STORAGE_PATH",
+                "/tmp/hisim/hicache/storage_keys.txt",
+            )
+        )

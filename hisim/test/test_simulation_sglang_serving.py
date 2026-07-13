@@ -6,11 +6,14 @@ import requests
 import json
 import time
 import pytest
+from pathlib import Path
 
 from hisim.simulation.base.runner import BaseBenchmarkRunner
 from env import check_framework, MODEL_PATH
 
-os.environ["HISIM_CONFIG_PATH"] = os.path.dirname(__file__) + "/assets/mock/config.json"
+os.environ["HISIM_CONFIG_PATH"] = (
+    Path(__file__).parents[1] / "configs/simulation/qwen3_32b_h100_aic.json"
+).as_posix()
 
 
 class SGLangServingRunner(BaseBenchmarkRunner):

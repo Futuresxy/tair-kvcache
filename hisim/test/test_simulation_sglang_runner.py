@@ -5,7 +5,9 @@ from env import check_framework, MODEL_PATH
 from hisim.dataset import DatasetArgs
 from hisim.simulation.types import BenchmarkConfig
 
-os.environ["HISIM_CONFIG_PATH"] = os.path.dirname(__file__) + "/assets/mock/config.json"
+os.environ["HISIM_CONFIG_PATH"] = (
+    Path(__file__).parents[1] / "configs/simulation/qwen3_32b_h100_aic.json"
+).as_posix()
 os.environ["FLASHINFER_DISABLE_VERSION_CHECK"] = "1"
 
 

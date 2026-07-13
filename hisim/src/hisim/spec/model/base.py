@@ -191,6 +191,12 @@ class ModelInfo:
     def list_all_models() -> Dict[str, "ModelInfo"]:
         return _all_models_
 
+    @staticmethod
+    def register_model(model: "ModelInfo", *aliases: str) -> None:
+        _all_models_[model.name.upper()] = copy.deepcopy(model)
+        for alias in aliases:
+            _all_models_[alias.upper()] = copy.deepcopy(model)
+
     @classmethod
     def from_json(cls, model_path: str) -> Union[None, "ModelInfo"]:
         try:

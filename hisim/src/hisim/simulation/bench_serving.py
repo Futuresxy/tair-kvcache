@@ -9,6 +9,16 @@ Usage:
 python3 -m sglang.bench_serving --backend sglang --num-prompt 10
 
 python3 -m sglang.bench_serving --backend sglang --dataset-name random --num-prompts 3000 --random-input 1024 --random-output 1024 --random-range-ratio 0.5
+
+sample_hisim_collection_requests()
+  -> DatasetRow(timestamp, prompt_len, output_len)
+  -> get_request()
+  -> request.simulation = {created_time, total_request}
+  -> RequestFuncInput(simulation=...)
+  -> async_request_sglang_generate()
+  -> sampling_params.custom_params.simulation
+  -> SGLang server
+  -> sglang_hook.py 的 C_SchedulerHook 
 """
 
 import argparse
@@ -1740,9 +1750,13 @@ def sample_hisim_collection_requests(
     )
     for idx in range(num_requests):
         item = raw_input_requests[idx]
+        if getattr(args, "tokenize_prompt", False):
+            prompt = item["input_ids"]
+        else:
+            prompt = tokenizer.decode(item["input_ids"])
         input_requests.append(
             DatasetRow(
-                prompt=tokenizer.decode(item["input_ids"]),
+                prompt=prompt,
                 prompt_len=item["input_length"],
                 output_len=item["output_length"],
                 timestamp=item[timestamp_field_name],
@@ -1821,7 +1835,7 @@ def calculate_metrics(
     input_requests: List[DatasetRow],
     outputs: List[RequestFuncOutput],
     dur_s: float,
-    tokenizer: PreTrainedTokenizerBase,
+    tokenizer: Optional[PreTrainedTokenizerBase],
     backend: str,
     accept_length: Optional[float] = None,
     plot_throughput: bool = False,
@@ -1838,8 +1852,10 @@ def calculate_metrics(
     e2e_latencies: List[float] = []
     retokenized_itls: List[float] = []
 
+    can_retokenize = tokenizer is not None
     use_retokenized_itl = (
-        accept_length is not None
+        can_retokenize
+        and accept_length is not None
         and accept_length > 0
         and backend in ("sglang-oai", "sglang-oai-chat")
     )
@@ -1848,9 +1864,14 @@ def calculate_metrics(
         if outputs[i].success:
             output_len = outputs[i].output_len
             output_lens.append(output_len)
-            retokenized_output_len = len(
-                tokenizer.encode(outputs[i].generated_text, add_special_tokens=False)
-            )
+            if can_retokenize:
+                retokenized_output_len = len(
+                    tokenizer.encode(
+                        outputs[i].generated_text, add_special_tokens=False
+                    )
+                )
+            else:
+                retokenized_output_len = output_len
             retokenized_output_lens.append(retokenized_output_len)
             total_input += input_requests[i].prompt_len
             total_input_text += input_requests[i].text_prompt_len
@@ -2471,6 +2492,10 @@ async def benchmark(
             result_for_dump = result
         file.write(json.dumps(result_for_dump) + "\n")
 
+    if getattr(args, "pretty_output_file", None):
+        with open(args.pretty_output_file, "w") as file:
+            file.write(json.dumps(result_for_dump, indent=2, sort_keys=True) + "\n")
+
     return result | result_details
 
 
@@ -2624,7 +2649,10 @@ def run_benchmark(args_: argparse.Namespace):
         print("No model specified or found. Please provide a model using `--model`.")
         sys.exit(1)
 
-    if not check_chat_template(args.model):
+    raw_hisim_collection = (
+        args.tokenize_prompt and args.dataset_name == "hisim-collection"
+    )
+    if not raw_hisim_collection and not check_chat_template(args.model):
         print(
             "\nWARNING It is recommended to use the `Chat` or `Instruct` model for benchmarking.\n"
             "Because when the tokenizer counts the output tokens, if there is gibberish, it might count incorrectly.\n"
@@ -2651,7 +2679,7 @@ def run_benchmark(args_: argparse.Namespace):
     backend = args.backend
     model_id = args.served_model_name or args.model
     tokenizer_id = args.tokenizer if args.tokenizer is not None else args.model
-    tokenizer = get_tokenizer(tokenizer_id)
+    tokenizer = None if raw_hisim_collection else get_tokenizer(tokenizer_id)
     input_requests = get_dataset(args, tokenizer, model_id)
 
     # compatible with SimpleNamespace
@@ -2870,6 +2898,14 @@ if __name__ == "__main__":
         "if the server is not processing requests fast enough to keep up.",
     )
     parser.add_argument("--output-file", type=str, help="Output JSONL file name.")
+    parser.add_argument(
+        "--pretty-output-file",
+        type=str,
+        help=(
+            "Optional human-readable JSON output file. This writes one "
+            "pretty-printed JSON document and does not replace --output-file."
+        ),
+    )
     parser.add_argument(
         "--output-details", action="store_true", help="Output details of benchmarking."
     )

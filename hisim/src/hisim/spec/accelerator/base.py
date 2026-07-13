@@ -27,14 +27,15 @@ class AcceleratorInfo:
     def from_dict(cls, config: Dict, save_to_registry: bool = False):
         acc = cls(**config)
         if save_to_registry:
-            if acc.name in _acc_alias:
+            if acc.name.upper() in _acc_alias:
                 logger.error(f"{acc.name} is already in registry")
             _all_accs_[acc.device_name.upper()] = acc
             for alias in acc.device_alias:
-                if alias in _acc_alias:
+                alias_key = alias.upper()
+                if alias_key in _acc_alias:
                     logger.warning(f"Device alias [{alias}] is already in registry.")
                 else:
-                    _acc_alias[alias] = acc.device_name.upper()
+                    _acc_alias[alias_key] = acc.device_name.upper()
         return acc
 
     # deprecated: Use name instead
@@ -75,9 +76,10 @@ class AcceleratorInfo:
 
     @staticmethod
     def find_by_hw_name(hw_name: str) -> Union[None, "AcceleratorInfo"]:
-        if hw_name in _acc_alias:
-            hw_name = _acc_alias[hw_name]
-        return _all_accs_.get(hw_name.upper(), None)
+        hw_key = hw_name.upper()
+        if hw_key in _acc_alias:
+            hw_key = _acc_alias[hw_key]
+        return _all_accs_.get(hw_key, None)
 
     @staticmethod
     def list_all_hws() -> Dict[str, "AcceleratorInfo"]:
