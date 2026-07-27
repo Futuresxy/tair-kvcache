@@ -36,6 +36,9 @@ public:
     void GetCacheLocation(coro_http::coro_http_connection *http_conn,
                           proto::meta::GetCacheLocationRequest *request,
                           proto::meta::GetCacheLocationResponse *response);
+    void GetCacheLocationLen(coro_http::coro_http_connection *http_conn,
+                             proto::meta::GetCacheLocationLenRequest *request,
+                             proto::meta::GetCacheLocationLenResponse *response);
     void GetCacheLocationsByBackend(coro_http::coro_http_connection *http_conn,
                                     proto::meta::GetCacheLocationsByBackendRequest *request,
                                     proto::meta::GetCacheLocationsByBackendResponse *response);
@@ -59,6 +62,10 @@ public:
     void ReportEvent(coro_http::coro_http_connection *http_conn,
                      proto::meta::ReportEventRequest *request,
                      proto::meta::ReportEventResponse *response);
+
+    void GetHostCacheState(coro_http::coro_http_connection *http_conn,
+                           proto::meta::GetHostCacheStateRequest *request,
+                           proto::meta::GetHostCacheStateResponse *response);
 
 private:
     std::shared_ptr<MetaServiceImpl> meta_service_impl_;
