@@ -1,30 +1,36 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 
 #include "kv_cache_manager/common/jsonizable.h"
 #include "kv_cache_manager/common/request_context.h"
 #include "kv_cache_manager/common/unittest.h"
 #include "kv_cache_manager/config/instance_group.h"
+#include "kv_cache_manager/config/migration_strategy.h"
 #include "kv_cache_manager/config/model_deployment.h"
 #include "kv_cache_manager/config/registry_manager.h"
 #include "kv_cache_manager/data_storage/data_storage_backend.h"
 #include "kv_cache_manager/data_storage/data_storage_manager.h"
-#include "kv_cache_manager/data_storage/vineyard_backend.h"
+#include "kv_cache_manager/data_storage/event_report_backend.h"
 #include "kv_cache_manager/event/event_manager.h"
 #include "kv_cache_manager/manager/cache_location_view.h"
 #include "kv_cache_manager/manager/cache_manager.h"
 #include "kv_cache_manager/manager/cache_reclaimer.h"
+#include "kv_cache_manager/manager/meta_searcher.h"
 #include "kv_cache_manager/manager/meta_searcher_manager.h"
+#include "kv_cache_manager/manager/migration_manager.h"
 #include "kv_cache_manager/manager/reclaimer_task_supervisor.h"
 #include "kv_cache_manager/manager/schedule_plan_executor.h"
 #include "kv_cache_manager/manager/startup_config_loader.h"
+#include "kv_cache_manager/manager/write_location_manager.h"
 #include "kv_cache_manager/meta/common.h"
 #include "kv_cache_manager/meta/meta_indexer.h"
 #include "kv_cache_manager/meta/meta_indexer_manager.h"
 #include "kv_cache_manager/metrics/metrics_collector.h"
 #include "kv_cache_manager/metrics/metrics_registry.h"
+#include "stub.h"
 
 namespace {
 static const std::string default_storage_configs(
@@ -33,6 +39,45 @@ static const std::string default_storage_configs(
 } // namespace
 
 namespace kv_cache_manager {
+
+namespace mark_query_read_error_stub {
+ErrorCode ReadError_stub(void * /*obj*/,
+                         const std::string & /*instance_id*/,
+                         const std::vector<int64_t> &block_keys,
+                         std::vector<MigrationManager::MarkQueryResult> &out) {
+    out.assign(block_keys.size(), MigrationManager::MarkQueryResult{});
+    for (auto &result : out) {
+        result.state = MigrationManager::MarkQueryState::kReadError;
+        result.ec = EC_ERROR;
+        // 故意携带 stale target，证明调用方依据 state 而不是 target 是否为空做判断。
+        result.target = "cold_01";
+    }
+    return EC_ERROR;
+}
+} // namespace mark_query_read_error_stub
+
+namespace remove_instance_reclaimer_state_stub {
+CacheReclaimer *reclaimer = nullptr;
+bool called = false;
+bool observed_paused = false;
+
+void Reset(CacheReclaimer *value) {
+    reclaimer = value;
+    called = false;
+    observed_paused = false;
+}
+
+ErrorCode RemoveInstance_stub(void * /*obj*/,
+                              RequestContext * /*request_context*/,
+                              const std::string & /*instance_group*/,
+                              const std::string & /*instance_id*/) {
+    called = true;
+    if (reclaimer != nullptr) {
+        observed_paused = reclaimer->IsPaused();
+    }
+    return EC_ERROR;
+}
+} // namespace remove_instance_reclaimer_state_stub
 
 class MockDataStorageBackend : public DataStorageBackend {
 public:
@@ -70,7 +115,7 @@ public:
     }
 
     DataStorageType GetType() override { return delegate_->GetType(); }
-    bool Available() override { return delegate_->Available(); }
+    bool Available() override { return IsAvailable() && delegate_->Available(); }
     double GetStorageUsageRatio(const std::string &t) const override { return delegate_->GetStorageUsageRatio(t); }
     const StorageConfig &GetStorageConfig() override { return delegate_->GetStorageConfig(); }
     ErrorCode DoOpen(const StorageConfig &c, const std::string &t) override { return delegate_->DoOpen(c, t); }
@@ -137,7 +182,45 @@ public:
 
         EXPECT_EQ(EC_OK, cache_manager->DoRecover());
 
+        // 注册 tiered 测试用的冷热 dummy 后端。MarkForTieredWrite 要求 target 已注册，
+        // stale location 测试需要真实 backend 以便用 MightExistInterceptor 构造"meta SERVING 但数据已丢"。
+        RegisterDummyStorage("hot_01");
+        RegisterDummyStorage("cold_01");
+
         return cache_manager;
+    }
+
+    bool RegisterDummyStorage(const std::string &name) {
+        auto spec = std::make_shared<DummyStorageSpec>();
+        spec->set_root_path(GetPrivateTestRuntimeDataPath() + name + "/");
+        spec->set_key_count_per_file(1);
+        StorageConfig config;
+        config.set_type(DataStorageType::DATA_STORAGE_TYPE_DUMMY);
+        config.set_global_unique_name(name);
+        config.set_storage_spec(spec);
+        auto rc = std::make_shared<RequestContext>("reg_storage");
+        auto dsm = registry_manager_->data_storage_manager();
+        if (dsm->RegisterStorage(rc.get(), name, config) != EC_OK) {
+            return false;
+        }
+        // 默认让数据 MightExist=true，使仅建 meta location(未真正写数据文件)的 tiered 测试仍视其为有效；
+        // 需要模拟"数据已丢"的用例可在测试内覆盖为返回 false 的 interceptor。
+        auto original = dsm->storage_map_[name];
+        dsm->storage_map_[name] = std::make_shared<MightExistInterceptor>(
+            original, [](const std::vector<DataStorageUri> &uris) { return std::vector<bool>(uris.size(), true); });
+        return true;
+    }
+
+    bool RegisterNfsStorage(const std::string &name) {
+        auto spec = std::make_shared<NfsStorageSpec>();
+        spec->set_root_path(GetPrivateTestRuntimeDataPath() + name + "/");
+        spec->set_key_count_per_file(1);
+        StorageConfig config;
+        config.set_type(DataStorageType::DATA_STORAGE_TYPE_NFS);
+        config.set_global_unique_name(name);
+        config.set_storage_spec(spec);
+        auto rc = std::make_shared<RequestContext>("reg_nfs_storage");
+        return registry_manager_->data_storage_manager()->RegisterStorage(rc.get(), name, config) == EC_OK;
     }
 
     ModelDeployment createModelDeployment() {
@@ -162,6 +245,27 @@ public:
         return location_spec_infos;
     }
 
+    void EnableTieredMigrationStrategy(const std::string &group_name = "default",
+                                       const std::string &source_storage = "hot_01",
+                                       const std::string &target_storage = "cold_01",
+                                       int64_t mark_timeout_ms = MigrationMarkMethod::kDefaultTimeoutMs) {
+        auto iter = registry_manager_->instance_group_configs_.find(group_name);
+        ASSERT_TRUE(iter != registry_manager_->instance_group_configs_.end());
+        ASSERT_TRUE(iter->second != nullptr);
+        ASSERT_TRUE(iter->second->cache_config_ != nullptr);
+
+        auto strategy = std::make_shared<MigrationStrategy>();
+        strategy->set_source_storage_name(source_storage);
+        strategy->set_target_storage_name(target_storage);
+        strategy->set_trigger_threshold(0.01);
+        MigrationMethods methods;
+        methods.mutable_mark().set_enabled(true);
+        methods.mutable_mark().set_timeout_ms(mark_timeout_ms);
+        strategy->set_methods(methods);
+        strategy->set_retention(MigrationRetention::MIGRATION_RETENTION_DELETE_SOURCE);
+        iter->second->cache_config_->set_migration_strategies({strategy});
+    }
+
     void expectEmptySpec(const CacheLocationView::LocationSpecViewVec &specs) {
         for (auto &spec : specs) {
             EXPECT_EQ("", spec.uri());
@@ -178,6 +282,27 @@ public:
     std::shared_ptr<RequestContext> request_context_;
     std::shared_ptr<MetricsRegistry> metrics_registry_;
 };
+
+TEST_F(CacheManagerTest, TestInitRejectsInvalidMigrationWorkerBudget) {
+    const std::vector<std::pair<int32_t, uint32_t>> invalid_configs{
+        {1, 1}, // at least one worker must remain available outside migration
+        {2, 0},
+        {2, 2},
+        {2, 3},
+    };
+    for (const auto &[worker_count, migration_budget] : invalid_configs) {
+        auto manager = std::make_unique<CacheManager>(metrics_registry_, registry_manager_);
+        EXPECT_FALSE(manager->Init(worker_count,
+                                   /*cache_reclaimer_key_sampling_size_total*/ 1000,
+                                   /*cache_reclaimer_key_sampling_size_per_task*/ 100,
+                                   /*cache_reclaimer_del_batch_size*/ 100,
+                                   /*cache_reclaimer_idle_interval_ms*/ 100,
+                                   /*cache_reclaimer_worker_size*/ 16,
+                                   CacheReclaimerAsyncDeleteConfig{},
+                                   migration_budget))
+            << "worker_count=" << worker_count << " migration_budget=" << migration_budget;
+    }
+}
 
 TEST_F(CacheManagerTest, TestRegisterInstance) {
     // register same instance in each round
@@ -247,6 +372,39 @@ TEST_F(CacheManagerTest, TestRegisterInstance) {
     }
 }
 
+TEST_F(CacheManagerTest, TestRegisterInstanceReturnsTieredMigrationStorageConfigs) {
+    const std::string migration_source = "nfs_migration_source";
+    const std::string migration_target = "nfs_migration_target";
+    ASSERT_TRUE(RegisterNfsStorage(migration_source));
+    ASSERT_TRUE(RegisterNfsStorage(migration_target));
+
+    auto [group_ec, instance_group] = registry_manager_->GetInstanceGroup(request_context_.get(), "default");
+    ASSERT_EQ(EC_OK, group_ec);
+    ASSERT_NE(nullptr, instance_group);
+    const auto original_storage_candidates = instance_group->storage_candidates();
+    ASSERT_EQ(std::vector<std::string>({"nfs_01"}), original_storage_candidates);
+
+    EnableTieredMigrationStrategy("default", migration_source, migration_target);
+    auto [register_ec, storage_configs] = cache_manager_->RegisterInstance(request_context_.get(),
+                                                                           "default",
+                                                                           "tiered_sdk_config_instance",
+                                                                           64,
+                                                                           createLocationSpecInfos(),
+                                                                           createModelDeployment(),
+                                                                           std::vector<LocationSpecGroup>());
+    ASSERT_EQ(EC_OK, register_ec);
+
+    std::vector<std::shared_ptr<StorageConfig>> returned_configs;
+    ASSERT_TRUE(Jsonizable::FromJsonString(storage_configs, returned_configs));
+    std::set<std::string> returned_storage_names;
+    for (const auto &config : returned_configs) {
+        ASSERT_NE(nullptr, config);
+        returned_storage_names.insert(config->global_unique_name());
+    }
+    EXPECT_EQ((std::set<std::string>{"nfs_01", migration_source, migration_target}), returned_storage_names);
+    EXPECT_EQ(original_storage_candidates, instance_group->storage_candidates());
+}
+
 TEST_F(CacheManagerTest, TestRemoveInstance) {
     cache_manager_->RegisterInstance(request_context_.get(),
                                      "default",
@@ -291,6 +449,34 @@ TEST_F(CacheManagerTest, TestRemoveInstance) {
         ASSERT_TRUE(Jsonizable::FromJsonString(metas[i], meta));
         ASSERT_EQ(CacheLocation::CacheLocationStatusToString(CacheLocationStatus::CLS_NOT_FOUND), meta.at("status"));
     }
+}
+
+// RemoveInstance 的 per-instance draining 不得读写全局 Reclaimer pause 状态。
+// Registry stub 在 drain 与删除的边界观察中间状态：false 场景验证删除 A 不会暂停
+// 其他 instance；true 场景验证错误返回不会 Resume 掉 Server 生命周期的既有暂停。
+TEST_F(CacheManagerTest, TestRemoveInstanceDoesNotChangeGlobalReclaimerPauseState) {
+    Stub stub;
+    stub.set(ADDR(RegistryManager, RemoveInstance), remove_instance_reclaimer_state_stub::RemoveInstance_stub);
+
+    auto verify_pause_state = [&](bool initially_paused) {
+        if (initially_paused) {
+            cache_manager_->PauseReclaimer();
+        } else {
+            cache_manager_->ResumeReclaimer();
+        }
+        ASSERT_EQ(initially_paused, cache_manager_->cache_reclaimer()->IsPaused());
+
+        remove_instance_reclaimer_state_stub::Reset(cache_manager_->cache_reclaimer().get());
+        RequestContext ctx(initially_paused ? "remove_instance_paused" : "remove_instance_running");
+        EXPECT_EQ(EC_ERROR, cache_manager_->RemoveInstance(&ctx, "default", "test_instance"));
+        EXPECT_TRUE(remove_instance_reclaimer_state_stub::called);
+        EXPECT_EQ(initially_paused, remove_instance_reclaimer_state_stub::observed_paused);
+        EXPECT_EQ(initially_paused, cache_manager_->cache_reclaimer()->IsPaused());
+    };
+
+    verify_pause_state(false);
+    verify_pause_state(true);
+    cache_manager_->ResumeReclaimer();
 }
 
 TEST_F(CacheManagerTest, TestRecover) {
@@ -1945,12 +2131,12 @@ TEST_F(CacheManagerTest, TestGetCheckLocDataExistFunc_UnregisteredBackend) {
     ASSERT_EQ(func(loc), true);
 }
 
-TEST_F(CacheManagerTest, TestGetCheckLocDataExistFunc_VineyardFallbackLookup) {
-    // Vineyard URI hostname is a node IP, not the global_unique_name.
-    // The functor should look up the backend via event_reporting_storage_candidates.
+TEST_F(CacheManagerTest, TestGetCheckLocDataExistFunc_EventReportFallbackLookup) {
+    // Event report URI hostname is a node IP, not the global_unique_name.
+    // The functor should look up the backend via event_report_storage_candidates.
     const std::string instance_id = "my_cluster";
     const std::string instance_group = "my_group";
-    const std::string vineyard_storage_name = "vineyard_" + instance_group;
+    const std::string event_report_storage_name = "event_report_" + instance_group;
     const std::string node_host = "192.168.1.100:8080";
 
     // Register instance so GetInstanceGroupName works
@@ -1958,49 +2144,49 @@ TEST_F(CacheManagerTest, TestGetCheckLocDataExistFunc_VineyardFallbackLookup) {
         "test_quota_group", instance_group, instance_id, 64, createLocationSpecInfos(), createModelDeployment());
     registry_manager_->instance_infos_[instance_id] = instance_info;
 
-    // Create InstanceGroup with event_reporting_storage_candidates
+    // Create InstanceGroup with event_report_storage_candidates
     auto ig = std::make_shared<InstanceGroup>();
     ig->set_name(instance_group);
-    ig->set_storage_candidates({vineyard_storage_name});
-    ig->set_event_reporting_storage_candidates({vineyard_storage_name});
+    ig->set_storage_candidates({event_report_storage_name});
+    ig->set_event_report_storage_candidates({event_report_storage_name});
     ig->set_global_quota_group_name("test_quota_group");
     ig->set_max_instance_count(10);
     ig->set_version(1);
     registry_manager_->instance_group_configs_[instance_group] = ig;
 
     auto metrics_registry = cache_manager_->metrics_registry_;
-    auto vineyard_backend = std::make_shared<VineyardBackend>(metrics_registry);
+    auto event_report_backend = std::make_shared<EventReportBackend>(metrics_registry);
 
     StorageConfig config;
-    config.set_global_unique_name(vineyard_storage_name);
-    config.set_type(DataStorageType::DATA_STORAGE_TYPE_VINEYARD);
-    auto spec = std::make_shared<VineyardStorageSpec>();
+    config.set_global_unique_name(event_report_storage_name);
+    config.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+    auto spec = std::make_shared<EventReportStorageSpec>();
     config.set_storage_spec(spec);
-    vineyard_backend->Open(config, "test_trace");
+    event_report_backend->Open(config, "test_trace");
 
-    vineyard_backend->RegisterNode(instance_id, node_host, {"mem"});
+    event_report_backend->RegisterNode(instance_id, node_host, {"mem"});
 
     auto dsm = registry_manager_->data_storage_manager_;
-    dsm->storage_map_[vineyard_storage_name] = vineyard_backend;
+    dsm->storage_map_[event_report_storage_name] = event_report_backend;
 
     auto func = cache_manager_->GetCheckLocDataExistFunc(instance_id);
 
     CacheLocation loc;
     loc.set_status(CLS_SERVING);
-    loc.set_type(DataStorageType::DATA_STORAGE_TYPE_VINEYARD);
-    loc.set_location_specs({LocationSpec("tp0", "vineyard://192.168.1.100:8080/mem?gpu=A100")});
+    loc.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+    loc.set_location_specs({LocationSpec("tp0", "event_report://192.168.1.100:8080/mem?gpu=A100")});
     ASSERT_EQ(func(loc), true);
 
-    dsm->storage_map_.erase(vineyard_storage_name);
+    dsm->storage_map_.erase(event_report_storage_name);
     registry_manager_->instance_group_configs_.erase(instance_group);
 }
 
-TEST_F(CacheManagerTest, TestGetCheckLocDataExistFunc_VineyardNodeUnavailable) {
-    // When a vineyard node is registered but unavailable (grace period),
+TEST_F(CacheManagerTest, TestGetCheckLocDataExistFunc_EventReportNodeUnavailable) {
+    // When a event report node is registered but unavailable (grace period),
     // the functor should return false (not reachable).
     const std::string instance_id = "my_cluster";
     const std::string instance_group = "my_group";
-    const std::string vineyard_storage_name = "vineyard_" + instance_group;
+    const std::string event_report_storage_name = "event_report_" + instance_group;
     const std::string node_host = "192.168.1.200:8080";
 
     // Register instance so GetInstanceGroupName works
@@ -2008,50 +2194,50 @@ TEST_F(CacheManagerTest, TestGetCheckLocDataExistFunc_VineyardNodeUnavailable) {
         "test_quota_group", instance_group, instance_id, 64, createLocationSpecInfos(), createModelDeployment());
     registry_manager_->instance_infos_[instance_id] = instance_info;
 
-    // Create InstanceGroup with event_reporting_storage_candidates
+    // Create InstanceGroup with event_report_storage_candidates
     auto ig = std::make_shared<InstanceGroup>();
     ig->set_name(instance_group);
-    ig->set_storage_candidates({vineyard_storage_name});
-    ig->set_event_reporting_storage_candidates({vineyard_storage_name});
+    ig->set_storage_candidates({event_report_storage_name});
+    ig->set_event_report_storage_candidates({event_report_storage_name});
     ig->set_global_quota_group_name("test_quota_group");
     ig->set_max_instance_count(10);
     ig->set_version(1);
     registry_manager_->instance_group_configs_[instance_group] = ig;
 
     auto metrics_registry = cache_manager_->metrics_registry_;
-    auto vineyard_backend = std::make_shared<VineyardBackend>(metrics_registry);
+    auto event_report_backend = std::make_shared<EventReportBackend>(metrics_registry);
 
     StorageConfig config;
-    config.set_global_unique_name(vineyard_storage_name);
-    config.set_type(DataStorageType::DATA_STORAGE_TYPE_VINEYARD);
-    auto spec = std::make_shared<VineyardStorageSpec>();
+    config.set_global_unique_name(event_report_storage_name);
+    config.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+    auto spec = std::make_shared<EventReportStorageSpec>();
     config.set_storage_spec(spec);
-    vineyard_backend->Open(config, "test_trace");
+    event_report_backend->Open(config, "test_trace");
 
-    vineyard_backend->RegisterNode(instance_id, node_host, {"mem"});
-    vineyard_backend->SetNodeUnavailable(instance_id, node_host);
+    event_report_backend->RegisterNode(instance_id, node_host, {"mem"});
+    event_report_backend->SetNodeUnavailable(instance_id, node_host);
 
     auto dsm = registry_manager_->data_storage_manager_;
-    dsm->storage_map_[vineyard_storage_name] = vineyard_backend;
+    dsm->storage_map_[event_report_storage_name] = event_report_backend;
 
     auto func = cache_manager_->GetCheckLocDataExistFunc(instance_id);
 
     CacheLocation loc;
     loc.set_status(CLS_SERVING);
-    loc.set_type(DataStorageType::DATA_STORAGE_TYPE_VINEYARD);
-    loc.set_location_specs({LocationSpec("tp0", "vineyard://192.168.1.200:8080/mem")});
+    loc.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+    loc.set_location_specs({LocationSpec("tp0", "event_report://192.168.1.200:8080/mem")});
     ASSERT_EQ(func(loc), false);
 
-    dsm->storage_map_.erase(vineyard_storage_name);
+    dsm->storage_map_.erase(event_report_storage_name);
     registry_manager_->instance_group_configs_.erase(instance_group);
 }
 
-TEST_F(CacheManagerTest, TestGetCheckLocDataExistFunc_VineyardNodeUnregistered) {
-    // When a vineyard node has been unregistered (dead, past grace period),
+TEST_F(CacheManagerTest, TestGetCheckLocDataExistFunc_EventReportNodeUnregistered) {
+    // When a event report node has been unregistered (dead, past grace period),
     // MightExist returns false -> the functor should return false.
     const std::string instance_id = "my_cluster";
     const std::string instance_group = "my_group";
-    const std::string vineyard_storage_name = "vineyard_" + instance_group;
+    const std::string event_report_storage_name = "event_report_" + instance_group;
     const std::string node_host = "192.168.1.200:8080";
 
     // Register instance so GetInstanceGroupName works
@@ -2059,38 +2245,38 @@ TEST_F(CacheManagerTest, TestGetCheckLocDataExistFunc_VineyardNodeUnregistered) 
         "test_quota_group", instance_group, instance_id, 64, createLocationSpecInfos(), createModelDeployment());
     registry_manager_->instance_infos_[instance_id] = instance_info;
 
-    // Create InstanceGroup with event_reporting_storage_candidates
+    // Create InstanceGroup with event_report_storage_candidates
     auto ig = std::make_shared<InstanceGroup>();
     ig->set_name(instance_group);
-    ig->set_storage_candidates({vineyard_storage_name});
-    ig->set_event_reporting_storage_candidates({vineyard_storage_name});
+    ig->set_storage_candidates({event_report_storage_name});
+    ig->set_event_report_storage_candidates({event_report_storage_name});
     ig->set_global_quota_group_name("test_quota_group");
     ig->set_max_instance_count(10);
     ig->set_version(1);
     registry_manager_->instance_group_configs_[instance_group] = ig;
 
     auto metrics_registry = cache_manager_->metrics_registry_;
-    auto vineyard_backend = std::make_shared<VineyardBackend>(metrics_registry);
+    auto event_report_backend = std::make_shared<EventReportBackend>(metrics_registry);
 
     StorageConfig config;
-    config.set_global_unique_name(vineyard_storage_name);
-    config.set_type(DataStorageType::DATA_STORAGE_TYPE_VINEYARD);
-    auto spec = std::make_shared<VineyardStorageSpec>();
+    config.set_global_unique_name(event_report_storage_name);
+    config.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+    auto spec = std::make_shared<EventReportStorageSpec>();
     config.set_storage_spec(spec);
-    vineyard_backend->Open(config, "test_trace");
+    event_report_backend->Open(config, "test_trace");
 
     auto dsm = registry_manager_->data_storage_manager_;
-    dsm->storage_map_[vineyard_storage_name] = vineyard_backend;
+    dsm->storage_map_[event_report_storage_name] = event_report_backend;
 
     auto func = cache_manager_->GetCheckLocDataExistFunc(instance_id);
 
     CacheLocation loc;
     loc.set_status(CLS_SERVING);
-    loc.set_type(DataStorageType::DATA_STORAGE_TYPE_VINEYARD);
-    loc.set_location_specs({LocationSpec("tp0", "vineyard://192.168.1.200:8080/mem")});
+    loc.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+    loc.set_location_specs({LocationSpec("tp0", "event_report://192.168.1.200:8080/mem")});
     ASSERT_EQ(func(loc), false);
 
-    dsm->storage_map_.erase(vineyard_storage_name);
+    dsm->storage_map_.erase(event_report_storage_name);
     registry_manager_->instance_group_configs_.erase(instance_group);
 }
 
@@ -2127,7 +2313,9 @@ TEST_F(CacheManagerTest, TestGetSubmitDelReqFunc_SubmitsToExecutor) {
 
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        executor->tasks_.clear();
+        for (auto &queue : executor->task_queues_) {
+            queue.clear();
+        }
     }
 
     auto func = cache_manager_->GetSubmitDelReqFunc("test_instance");
@@ -2135,20 +2323,22 @@ TEST_F(CacheManagerTest, TestGetSubmitDelReqFunc_SubmitsToExecutor) {
 
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        ASSERT_EQ(1u, executor->tasks_.size());
+        ASSERT_EQ(1u, executor->WaitingTaskCountLocked());
     }
 
     // submit a second request and verify count increases
     func({300}, {{"loc_c"}});
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        ASSERT_EQ(2u, executor->tasks_.size());
+        ASSERT_EQ(2u, executor->WaitingTaskCountLocked());
     }
 
     // clean up: clear tasks so executor destructor is clean
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        executor->tasks_.clear();
+        for (auto &queue : executor->task_queues_) {
+            queue.clear();
+        }
     }
 }
 
@@ -2316,7 +2506,9 @@ TEST_F(CacheManagerTest, TestFilterWriteCache_StaleBreaksPrefix) {
     executor->stop_.store(false);
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        executor->tasks_.clear();
+        for (auto &queue : executor->task_queues_) {
+            queue.clear();
+        }
     }
 
     // install interceptor: key 1 exists, key 2 stale, key 3 exists
@@ -2353,13 +2545,15 @@ TEST_F(CacheManagerTest, TestFilterWriteCache_StaleBreaksPrefix) {
     // location
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        ASSERT_EQ(1u, executor->tasks_.size());
+        ASSERT_EQ(1u, executor->WaitingTaskCountLocked());
     }
 
     // clean up
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        executor->tasks_.clear();
+        for (auto &queue : executor->task_queues_) {
+            queue.clear();
+        }
     }
     dsm->storage_map_["nfs_01"] = original;
 }
@@ -2403,7 +2597,9 @@ TEST_F(CacheManagerTest, TestFilterWriteCache_AllStale) {
     executor->stop_.store(false);
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        executor->tasks_.clear();
+        for (auto &queue : executor->task_queues_) {
+            queue.clear();
+        }
     }
 
     // install interceptor: all stale
@@ -2427,12 +2623,14 @@ TEST_F(CacheManagerTest, TestFilterWriteCache_AllStale) {
     // deletion request submitted for the 2 stale keys
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        ASSERT_EQ(1u, executor->tasks_.size());
+        ASSERT_EQ(1u, executor->WaitingTaskCountLocked());
     }
 
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        executor->tasks_.clear();
+        for (auto &queue : executor->task_queues_) {
+            queue.clear();
+        }
     }
     dsm->storage_map_["nfs_01"] = original;
 }
@@ -2476,7 +2674,9 @@ TEST_F(CacheManagerTest, TestFilterWriteCache_StaleSuffix) {
     executor->stop_.store(false);
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        executor->tasks_.clear();
+        for (auto &queue : executor->task_queues_) {
+            queue.clear();
+        }
     }
 
     // install interceptor: key 1 valid, key 2 stale, key 3 stale
@@ -2508,12 +2708,14 @@ TEST_F(CacheManagerTest, TestFilterWriteCache_StaleSuffix) {
     // deletion request submitted for stale keys 2,3
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        ASSERT_EQ(1u, executor->tasks_.size());
+        ASSERT_EQ(1u, executor->WaitingTaskCountLocked());
     }
 
     {
         std::lock_guard<std::mutex> lock(executor->queue_mutex_);
-        executor->tasks_.clear();
+        for (auto &queue : executor->task_queues_) {
+            queue.clear();
+        }
     }
     dsm->storage_map_["nfs_01"] = original;
 }
@@ -2765,6 +2967,25 @@ TEST_F(CacheManagerTest, TestDoRecoverAfterCleanup) {
     ASSERT_EQ("test_instance", meta_searcher->meta_indexer_->instance_id_);
 }
 
+TEST_F(CacheManagerTest, TestDoRecoverPreservesRegisteredDefaultQueryType) {
+    registry_manager_->instance_infos_["test_instance"]->set_default_query_type(
+        static_cast<int32_t>(CacheManager::QueryType::QT_PREFIX_MATCH));
+
+    ASSERT_EQ(EC_OK, cache_manager_->DoCleanup());
+    ASSERT_EQ(EC_OK, cache_manager_->DoRecoverOnce());
+
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("test_instance");
+    ASSERT_TRUE(meta_searcher);
+    ASSERT_TRUE(meta_searcher->meta_indexer_);
+    ASSERT_EQ("test_instance", meta_searcher->meta_indexer_->instance_id_);
+
+    CacheManager::KeyVector keys = {1};
+    auto [ec, hosts] = cache_manager_->GetHostCacheState(
+        request_context_.get(), "test_instance", CacheManager::QueryType::QT_UNSPECIFIED, keys);
+    EXPECT_EQ(EC_OK, ec);
+    EXPECT_TRUE(hosts.empty());
+}
+
 TEST_F(CacheManagerTest, TestDoRecoverOnceWithRegistryPartialFailureThenFix) {
     // Scenario:
     // 1. RegistryManager has instance_group + test_instance recovered, but a second instance
@@ -2909,17 +3130,493 @@ TEST_F(CacheManagerTest, InvalidateInstanceMetricsInvokesCallback) {
     ASSERT_EQ(1, call_count);
 }
 
+TEST_F(CacheManagerTest, TestReportEventRejectsInvalidRequestsAndMapsItemErrors) {
+    auto add_register_event = [](proto::meta::ReportEventRequest &request) {
+        auto *event = request.add_events();
+        event->set_event_type(proto::meta::EVENT_NODE_REGISTER);
+        event->mutable_node_register()->add_mediums("mem");
+    };
+
+    {
+        proto::meta::ReportEventRequest request;
+        request.set_instance_id("test_instance");
+        request.set_host_ip_port("10.0.0.30:8080");
+        add_register_event(request);
+
+        proto::meta::ReportEventResponse response;
+        EXPECT_EQ(EC_BADARGS, cache_manager_->ReportEvent(request_context_.get(), &request, &response));
+        EXPECT_EQ(proto::meta::INVALID_ARGUMENT, response.header().status().code());
+        EXPECT_EQ("storage_type is required", response.header().status().message());
+    }
+
+    {
+        proto::meta::ReportEventRequest request;
+        request.set_instance_id("test_instance");
+        request.set_host_ip_port("10.0.0.30:8080");
+        request.set_storage_type(proto::meta::ST_NFS);
+        add_register_event(request);
+
+        proto::meta::ReportEventResponse response;
+        EXPECT_EQ(EC_BADARGS, cache_manager_->ReportEvent(request_context_.get(), &request, &response));
+        EXPECT_EQ(proto::meta::INVALID_ARGUMENT, response.header().status().code());
+    }
+
+    {
+        proto::meta::ReportEventRequest request;
+        request.set_instance_id("missing_instance");
+        request.set_host_ip_port("10.0.0.30:8080");
+        request.set_storage_type(proto::meta::ST_EVENT_REPORT_L1P5);
+        add_register_event(request);
+
+        proto::meta::ReportEventResponse response;
+        EXPECT_EQ(EC_INSTANCE_NOT_EXIST, cache_manager_->ReportEvent(request_context_.get(), &request, &response));
+        EXPECT_EQ(proto::meta::INSTANCE_NOT_EXIST, response.header().status().code());
+    }
+
+    auto event_backend = std::make_shared<EventReportBackend>(cache_manager_->metrics_registry_);
+    StorageConfig config;
+    config.set_global_unique_name("event_backend_errors");
+    config.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+    config.set_storage_spec(std::make_shared<EventReportStorageSpec>());
+    ASSERT_EQ(EC_OK, event_backend->Open(config, "test_trace"));
+    registry_manager_->data_storage_manager_->storage_map_["event_backend_errors"] = event_backend;
+    registry_manager_->instance_group_configs_["default"]->set_event_report_storage_candidates(
+        {"event_backend_errors"});
+
+    {
+        proto::meta::ReportEventRequest request;
+        request.set_instance_id("test_instance");
+        request.set_host_ip_port("10.0.0.30:8080");
+        request.set_storage_type(proto::meta::ST_EVENT_REPORT_L2);
+        add_register_event(request);
+
+        proto::meta::ReportEventResponse response;
+        EXPECT_EQ(EC_INSTANCE_NOT_EXIST, cache_manager_->ReportEvent(request_context_.get(), &request, &response));
+        EXPECT_EQ(proto::meta::INSTANCE_NOT_EXIST, response.header().status().code());
+        EXPECT_FALSE(event_backend->IsNodeAvailable("test_instance", "10.0.0.30:8080"));
+    }
+
+    {
+        proto::meta::ReportEventRequest request;
+        request.set_instance_id("test_instance");
+        request.set_host_ip_port("10.0.0.30:8080");
+        request.set_storage_type(proto::meta::ST_EVENT_REPORT_L1P5);
+        add_register_event(request);
+
+        auto *invalid_add = request.add_events();
+        invalid_add->set_event_type(proto::meta::EVENT_BLOCK_ADD);
+        invalid_add->mutable_block_add()->set_block_key("100");
+        invalid_add->mutable_block_add()->set_medium("mem");
+
+        proto::meta::ReportEventResponse response;
+        EXPECT_EQ(EC_PARTIAL_OK, cache_manager_->ReportEvent(request_context_.get(), &request, &response));
+        EXPECT_EQ(proto::meta::INTERNAL_ERROR, response.header().status().code());
+        ASSERT_EQ(2, response.item_results_size());
+        EXPECT_EQ(proto::meta::OK, response.item_results(0));
+        EXPECT_EQ(proto::meta::INVALID_ARGUMENT, response.item_results(1));
+        EXPECT_TRUE(event_backend->IsNodeAvailable("test_instance", "10.0.0.30:8080"));
+    }
+
+    ASSERT_EQ(EC_OK, event_backend->Close());
+}
+
+TEST_F(CacheManagerTest, TestReportEventBlockAddMergesLocationSpecs) {
+    auto expected_reg = std::pair<ErrorCode, std::string>(EC_OK, default_storage_configs);
+    const std::string instance_id = "test_report_event_merge";
+    std::vector<LocationSpecInfo> location_spec_infos = {
+        LocationSpecInfo("linear_0", 512),
+        LocationSpecInfo("linear_1", 512),
+        LocationSpecInfo("full_3", 512),
+    };
+    ASSERT_EQ(expected_reg,
+              cache_manager_->RegisterInstance(request_context_.get(),
+                                               "default",
+                                               instance_id,
+                                               64,
+                                               location_spec_infos,
+                                               createModelDeployment(),
+                                               std::vector<LocationSpecGroup>()));
+
+    auto event_backend = std::make_shared<EventReportBackend>(cache_manager_->metrics_registry_);
+    {
+        StorageConfig cfg;
+        cfg.set_global_unique_name("event_backend_default");
+        cfg.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+        cfg.set_storage_spec(std::make_shared<EventReportStorageSpec>());
+        event_backend->Open(cfg, "test_trace");
+    }
+    registry_manager_->data_storage_manager_->storage_map_["event_backend_default"] = event_backend;
+    registry_manager_->instance_group_configs_["default"]->set_event_report_storage_candidates(
+        {"event_backend_default"});
+
+    const std::string host = "10.0.0.9:8080";
+    auto report_specs =
+        [&](int64_t key, const std::string &medium, const std::vector<std::vector<LocationSpec>> &spec_groups) {
+            proto::meta::ReportEventRequest req;
+            req.set_instance_id(instance_id);
+            req.set_host_ip_port(host);
+            req.set_storage_type(proto::meta::ST_EVENT_REPORT_L1P5);
+
+            auto *reg = req.add_events();
+            reg->set_event_type(proto::meta::EVENT_NODE_REGISTER);
+            reg->mutable_node_register()->add_mediums("mem");
+
+            for (const auto &specs : spec_groups) {
+                auto *ev = req.add_events();
+                ev->set_event_type(proto::meta::EVENT_BLOCK_ADD);
+                auto *ba = ev->mutable_block_add();
+                ba->set_block_key(std::to_string(key));
+                ba->set_medium(medium);
+                for (const auto &input_spec : specs) {
+                    auto *spec = ba->add_specs();
+                    spec->set_name(input_spec.name());
+                    spec->set_uri(input_spec.uri());
+                }
+            }
+
+            proto::meta::ReportEventResponse resp;
+            ASSERT_EQ(EC_OK, cache_manager_->ReportEvent(request_context_.get(), &req, &resp));
+        };
+
+    auto *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher(instance_id);
+    ASSERT_NE(nullptr, meta_searcher);
+
+    auto get_location_map = [&](int64_t key) {
+        std::vector<CacheLocationMap> location_maps;
+        BlockMask mask = static_cast<size_t>(0);
+        EXPECT_EQ(EC_OK, meta_searcher->BatchGetLocation(request_context_.get(), {key}, mask, location_maps));
+        EXPECT_EQ(1u, location_maps.size());
+        return location_maps.empty() ? CacheLocationMap() : location_maps[0];
+    };
+    auto get_spec_uris = [](const CacheLocationConstPtr &location) {
+        std::map<std::string, std::string> spec_uris;
+        if (!location) {
+            return spec_uris;
+        }
+        for (const auto &spec : location->location_specs()) {
+            spec_uris[spec.name()] = spec.uri();
+        }
+        return spec_uris;
+    };
+
+    // Case 1: one BlockAdd can create one CacheLocation with multiple specs.
+    const int64_t multi_spec_key = 9001;
+    report_specs(multi_spec_key,
+                 "mem",
+                 {{LocationSpec("linear_0", "event_report://10.0.0.9:8080/mem"),
+                   LocationSpec("linear_1", "event_report://10.0.0.9:8080/mem")}});
+    {
+        auto location_map = get_location_map(multi_spec_key);
+        ASSERT_EQ(1u, location_map.size());
+        const std::string location_id = event_backend->BuildLocationId("mem", host);
+        auto loc_it = location_map.find(location_id);
+        ASSERT_NE(location_map.end(), loc_it);
+        ASSERT_TRUE(loc_it->second);
+        EXPECT_EQ(2u, loc_it->second->spec_size());
+        auto spec_uris = get_spec_uris(loc_it->second);
+        ASSERT_EQ(2u, spec_uris.size());
+        EXPECT_EQ("event_report://10.0.0.9:8080/mem", spec_uris["linear_0"]);
+        EXPECT_EQ("event_report://10.0.0.9:8080/mem", spec_uris["linear_1"]);
+    }
+
+    // Case 2: later reports append new specs and overwrite same-name specs.
+    report_specs(multi_spec_key, "mem", {{LocationSpec("linear_0", "event_report://10.0.0.9:8080/mem")}});
+    report_specs(multi_spec_key, "mem", {{LocationSpec("full_3", "event_report://10.0.0.9:8080/mem")}});
+    {
+        auto location_map = get_location_map(multi_spec_key);
+        ASSERT_EQ(1u, location_map.size());
+        const std::string location_id = event_backend->BuildLocationId("mem", host);
+        auto loc_it = location_map.find(location_id);
+        ASSERT_NE(location_map.end(), loc_it);
+        ASSERT_TRUE(loc_it->second);
+        EXPECT_EQ(3u, loc_it->second->spec_size());
+        auto spec_uris = get_spec_uris(loc_it->second);
+        ASSERT_EQ(3u, spec_uris.size());
+        EXPECT_EQ("event_report://10.0.0.9:8080/mem", spec_uris["linear_0"]);
+        EXPECT_EQ("event_report://10.0.0.9:8080/mem", spec_uris["linear_1"]);
+        EXPECT_EQ("event_report://10.0.0.9:8080/mem", spec_uris["full_3"]);
+    }
+
+    // Case 3: multiple BlockAdd events for the same key in one request are merged before writing meta.
+    const int64_t same_request_key = 9002;
+    report_specs(same_request_key,
+                 "mem",
+                 {{LocationSpec("linear_0", "event_report://10.0.0.9:8080/mem")},
+                  {LocationSpec("linear_1", "event_report://10.0.0.9:8080/mem")},
+                  {LocationSpec("linear_0", "event_report://10.0.0.9:8080/mem")}});
+    {
+        auto location_map = get_location_map(same_request_key);
+        ASSERT_EQ(1u, location_map.size());
+        const std::string location_id = event_backend->BuildLocationId("mem", host);
+        auto loc_it = location_map.find(location_id);
+        ASSERT_NE(location_map.end(), loc_it);
+        ASSERT_TRUE(loc_it->second);
+        EXPECT_EQ(2u, loc_it->second->spec_size());
+        auto spec_uris = get_spec_uris(loc_it->second);
+        ASSERT_EQ(2u, spec_uris.size());
+        EXPECT_EQ("event_report://10.0.0.9:8080/mem", spec_uris["linear_0"]);
+        EXPECT_EQ("event_report://10.0.0.9:8080/mem", spec_uris["linear_1"]);
+    }
+
+    // Case 4: same key with different medium uses different location_id and does not merge into one CacheLocation.
+    const int64_t multi_medium_key = 9003;
+    report_specs(multi_medium_key, "mem", {{LocationSpec("linear_0", "event_report://10.0.0.9:8080/mem")}});
+    report_specs(multi_medium_key, "disk", {{LocationSpec("linear_1", "event_report://10.0.0.9:8080/disk")}});
+    {
+        auto location_map = get_location_map(multi_medium_key);
+        ASSERT_EQ(2u, location_map.size());
+
+        const std::string mem_location_id = event_backend->BuildLocationId("mem", host);
+        const std::string disk_location_id = event_backend->BuildLocationId("disk", host);
+        auto mem_it = location_map.find(mem_location_id);
+        auto disk_it = location_map.find(disk_location_id);
+        ASSERT_NE(location_map.end(), mem_it);
+        ASSERT_NE(location_map.end(), disk_it);
+        ASSERT_TRUE(mem_it->second);
+        ASSERT_TRUE(disk_it->second);
+
+        auto mem_specs = get_spec_uris(mem_it->second);
+        auto disk_specs = get_spec_uris(disk_it->second);
+        ASSERT_EQ(1u, mem_specs.size());
+        ASSERT_EQ(1u, disk_specs.size());
+        EXPECT_EQ("event_report://10.0.0.9:8080/mem", mem_specs["linear_0"]);
+        EXPECT_EQ("event_report://10.0.0.9:8080/disk", disk_specs["linear_1"]);
+    }
+}
+
+TEST_F(CacheManagerTest, TestReportEventL1P5L2BlockAddAreIsolated) {
+    auto expected_reg = std::pair<ErrorCode, std::string>(EC_OK, default_storage_configs);
+    const std::string instance_id = "test_report_event_l1p5_l2";
+    std::vector<LocationSpecInfo> location_spec_infos = {
+        LocationSpecInfo("linear_0", 512),
+        LocationSpecInfo("linear_1", 512),
+    };
+    ASSERT_EQ(expected_reg,
+              cache_manager_->RegisterInstance(request_context_.get(),
+                                               "default",
+                                               instance_id,
+                                               64,
+                                               location_spec_infos,
+                                               createModelDeployment(),
+                                               std::vector<LocationSpecGroup>()));
+
+    auto make_backend = [&](const std::string &name, DataStorageType type) {
+        auto backend = std::make_shared<EventReportBackend>(cache_manager_->metrics_registry_);
+        StorageConfig cfg;
+        cfg.set_global_unique_name(name);
+        cfg.set_type(type);
+        cfg.set_storage_spec(std::make_shared<EventReportStorageSpec>());
+        return std::make_pair(backend, backend->Open(cfg, "test_trace"));
+    };
+
+    auto l1p5_backend_result = make_backend("event_backend_l1p5", DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+    ASSERT_EQ(EC_OK, l1p5_backend_result.second);
+    auto l2_backend_result = make_backend("event_backend_l2", DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2);
+    ASSERT_EQ(EC_OK, l2_backend_result.second);
+    auto l1p5_backend = l1p5_backend_result.first;
+    auto l2_backend = l2_backend_result.first;
+    registry_manager_->data_storage_manager_->storage_map_["event_backend_l1p5"] = l1p5_backend;
+    registry_manager_->data_storage_manager_->storage_map_["event_backend_l2"] = l2_backend;
+    registry_manager_->instance_group_configs_["default"]->set_event_report_storage_candidates(
+        {"event_backend_l1p5", "event_backend_l2"});
+
+    const std::string host = "10.0.0.11:8080";
+    const int64_t key = 9201;
+    auto report_one = [&](proto::meta::StorageType storage_type, const std::string &spec_name, const std::string &uri) {
+        proto::meta::ReportEventRequest req;
+        req.set_instance_id(instance_id);
+        req.set_host_ip_port(host);
+        req.set_storage_type(storage_type);
+        auto *reg = req.add_events();
+        reg->set_event_type(proto::meta::EVENT_NODE_REGISTER);
+        reg->mutable_node_register()->add_mediums("mem");
+        auto *ev = req.add_events();
+        ev->set_event_type(proto::meta::EVENT_BLOCK_ADD);
+        auto *ba = ev->mutable_block_add();
+        ba->set_block_key(std::to_string(key));
+        ba->set_medium("mem");
+        auto *spec = ba->add_specs();
+        spec->set_name(spec_name);
+        spec->set_uri(uri);
+        proto::meta::ReportEventResponse resp;
+        ASSERT_EQ(EC_OK, cache_manager_->ReportEvent(request_context_.get(), &req, &resp));
+    };
+
+    report_one(proto::meta::ST_EVENT_REPORT_L1P5, "linear_0", "event_report://10.0.0.11:8080/l1p5");
+    report_one(proto::meta::ST_EVENT_REPORT_L2, "linear_1", "event_report://10.0.0.11:8080/l2");
+
+    auto *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher(instance_id);
+    ASSERT_NE(nullptr, meta_searcher);
+    std::vector<CacheLocationMap> location_maps;
+    BlockMask mask = static_cast<size_t>(0);
+    ASSERT_EQ(EC_OK, meta_searcher->BatchGetLocation(request_context_.get(), {key}, mask, location_maps));
+    ASSERT_EQ(1u, location_maps.size());
+    const auto &location_map = location_maps[0];
+    ASSERT_EQ(2u, location_map.size());
+
+    const std::string l1p5_location_id = l1p5_backend->BuildLocationId("mem", host);
+    const std::string l2_location_id = l2_backend->BuildLocationId("mem", host);
+    ASSERT_NE(l1p5_location_id, l2_location_id);
+    auto l1p5_it = location_map.find(l1p5_location_id);
+    auto l2_it = location_map.find(l2_location_id);
+    ASSERT_NE(location_map.end(), l1p5_it);
+    ASSERT_NE(location_map.end(), l2_it);
+    ASSERT_TRUE(l1p5_it->second);
+    ASSERT_TRUE(l2_it->second);
+
+    EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5, l1p5_it->second->type());
+    EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, l2_it->second->type());
+    ASSERT_EQ(1u, l1p5_it->second->location_specs().size());
+    ASSERT_EQ(1u, l2_it->second->location_specs().size());
+    EXPECT_EQ("linear_0", l1p5_it->second->location_specs()[0].name());
+    EXPECT_EQ("event_report://10.0.0.11:8080/l1p5", l1p5_it->second->location_specs()[0].uri());
+    EXPECT_EQ("linear_1", l2_it->second->location_specs()[0].name());
+    EXPECT_EQ("event_report://10.0.0.11:8080/l2", l2_it->second->location_specs()[0].uri());
+}
+
+TEST_F(CacheManagerTest, TestReportEventBlockDeleteRemovesLocationSpecs) {
+    auto expected_reg = std::pair<ErrorCode, std::string>(EC_OK, default_storage_configs);
+    const std::string instance_id = "test_report_event_delete_specs";
+    std::vector<LocationSpecInfo> location_spec_infos = {
+        LocationSpecInfo("linear_0", 512),
+        LocationSpecInfo("linear_1", 512),
+        LocationSpecInfo("full_3", 512),
+    };
+    ASSERT_EQ(expected_reg,
+              cache_manager_->RegisterInstance(request_context_.get(),
+                                               "default",
+                                               instance_id,
+                                               64,
+                                               location_spec_infos,
+                                               createModelDeployment(),
+                                               std::vector<LocationSpecGroup>()));
+
+    auto event_backend = std::make_shared<EventReportBackend>(cache_manager_->metrics_registry_);
+    {
+        StorageConfig cfg;
+        cfg.set_global_unique_name("event_backend_delete");
+        cfg.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+        cfg.set_storage_spec(std::make_shared<EventReportStorageSpec>());
+        event_backend->Open(cfg, "test_trace");
+    }
+    registry_manager_->data_storage_manager_->storage_map_["event_backend_delete"] = event_backend;
+    registry_manager_->instance_group_configs_["default"]->set_event_report_storage_candidates(
+        {"event_backend_delete"});
+
+    const std::string host = "10.0.0.10:8080";
+    auto report_add = [&](int64_t key, const std::string &medium, const std::vector<LocationSpec> &specs) {
+        proto::meta::ReportEventRequest req;
+        req.set_instance_id(instance_id);
+        req.set_host_ip_port(host);
+        req.set_storage_type(proto::meta::ST_EVENT_REPORT_L1P5);
+        auto *reg = req.add_events();
+        reg->set_event_type(proto::meta::EVENT_NODE_REGISTER);
+        reg->mutable_node_register()->add_mediums(medium);
+        auto *ev = req.add_events();
+        ev->set_event_type(proto::meta::EVENT_BLOCK_ADD);
+        auto *ba = ev->mutable_block_add();
+        ba->set_block_key(std::to_string(key));
+        ba->set_medium(medium);
+        for (const auto &input_spec : specs) {
+            auto *spec = ba->add_specs();
+            spec->set_name(input_spec.name());
+            spec->set_uri(input_spec.uri());
+        }
+        proto::meta::ReportEventResponse resp;
+        ASSERT_EQ(EC_OK, cache_manager_->ReportEvent(request_context_.get(), &req, &resp));
+    };
+    auto report_delete =
+        [&](int64_t key, const std::string &medium, const std::vector<std::vector<std::string>> &spec_name_groups) {
+            proto::meta::ReportEventRequest req;
+            req.set_instance_id(instance_id);
+            req.set_host_ip_port(host);
+            req.set_storage_type(proto::meta::ST_EVENT_REPORT_L1P5);
+            auto *reg = req.add_events();
+            reg->set_event_type(proto::meta::EVENT_NODE_REGISTER);
+            reg->mutable_node_register()->add_mediums(medium);
+            for (const auto &spec_names : spec_name_groups) {
+                auto *ev = req.add_events();
+                ev->set_event_type(proto::meta::EVENT_BLOCK_DELETE);
+                auto *bd = ev->mutable_block_delete();
+                bd->set_block_key(std::to_string(key));
+                bd->set_medium(medium);
+                for (const auto &spec_name : spec_names) {
+                    bd->add_spec_names(spec_name);
+                }
+            }
+            proto::meta::ReportEventResponse resp;
+            ASSERT_EQ(EC_OK, cache_manager_->ReportEvent(request_context_.get(), &req, &resp));
+        };
+
+    auto *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher(instance_id);
+    ASSERT_NE(nullptr, meta_searcher);
+    auto get_location_map = [&](int64_t key) {
+        std::vector<CacheLocationMap> location_maps;
+        BlockMask mask = static_cast<size_t>(0);
+        EXPECT_EQ(EC_OK, meta_searcher->BatchGetLocation(request_context_.get(), {key}, mask, location_maps));
+        EXPECT_EQ(1u, location_maps.size());
+        return location_maps.empty() ? CacheLocationMap() : location_maps[0];
+    };
+    auto get_spec_names = [](const CacheLocationConstPtr &location) {
+        std::set<std::string> spec_names;
+        if (!location) {
+            return spec_names;
+        }
+        for (const auto &spec : location->location_specs()) {
+            spec_names.insert(spec.name());
+        }
+        return spec_names;
+    };
+
+    const int64_t partial_delete_key = 9101;
+    report_add(partial_delete_key,
+               "mem",
+               {LocationSpec("linear_0", "event_report://10.0.0.10:8080/mem"),
+                LocationSpec("linear_1", "event_report://10.0.0.10:8080/mem"),
+                LocationSpec("full_3", "event_report://10.0.0.10:8080/mem")});
+
+    report_delete(partial_delete_key, "mem", {{"linear_0"}});
+    {
+        auto location_map = get_location_map(partial_delete_key);
+        ASSERT_EQ(1u, location_map.size());
+        const auto location_id = event_backend->BuildLocationId("mem", host);
+        auto loc_it = location_map.find(location_id);
+        ASSERT_NE(location_map.end(), loc_it);
+        EXPECT_EQ((std::set<std::string>{"linear_1", "full_3"}), get_spec_names(loc_it->second));
+        EXPECT_EQ(2u, loc_it->second->spec_size());
+    }
+
+    report_delete(partial_delete_key, "mem", {{"linear_1"}, {"full_3"}});
+    {
+        auto location_map = get_location_map(partial_delete_key);
+        EXPECT_TRUE(location_map.empty());
+    }
+
+    const int64_t multi_medium_key = 9103;
+    report_add(multi_medium_key, "mem", {LocationSpec("linear_0", "event_report://10.0.0.10:8080/mem")});
+    report_add(multi_medium_key, "disk", {LocationSpec("linear_1", "event_report://10.0.0.10:8080/disk")});
+    report_delete(multi_medium_key, "mem", {{"linear_0"}});
+    {
+        auto location_map = get_location_map(multi_medium_key);
+        ASSERT_EQ(1u, location_map.size());
+        const auto disk_location_id = event_backend->BuildLocationId("disk", host);
+        auto disk_it = location_map.find(disk_location_id);
+        ASSERT_NE(location_map.end(), disk_it);
+        EXPECT_EQ((std::set<std::string>{"linear_1"}), get_spec_names(disk_it->second));
+    }
+}
+
 // =============================================================
 // GetCacheLocationsByBackend with backend_selectors
 // =============================================================
 //
 // Data layout:
-//   3 V6D peers: A (192.168.1.1:8080), B (192.168.1.2:8080), C (192.168.1.3:8080)
+//   3 event report peers: A (192.168.1.1:8080), B (192.168.1.2:8080), C (192.168.1.3:8080)
 //   key 300: peer_A, peer_B, peer_C
 //   key 400: peer_A, peer_B
 //   key 500: peer_B only
 //   key 600: peer_A, peer_B
-//   key 700: no V6D
+//   key 700: no event report
 //   All 5 keys have NFS locations.
 //
 // PREFIX (from key[0]):
@@ -2957,23 +3654,24 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
             cache_manager_->FinishWriteCache(request_context_.get(), "test_instance", swci.write_session_id(), bm));
     }
 
-    // Set up VineyardBackend
+    // Set up EventReportBackend
     auto metrics_registry = cache_manager_->metrics_registry_;
-    auto vineyard_backend = std::make_shared<VineyardBackend>(metrics_registry);
+    auto event_report_backend = std::make_shared<EventReportBackend>(metrics_registry);
     {
-        StorageConfig v6d_config;
-        v6d_config.set_global_unique_name("vineyard_default");
-        v6d_config.set_type(DataStorageType::DATA_STORAGE_TYPE_VINEYARD);
-        v6d_config.set_storage_spec(std::make_shared<VineyardStorageSpec>());
-        vineyard_backend->Open(v6d_config, "test_trace");
+        StorageConfig er_config;
+        er_config.set_global_unique_name("event_report_default");
+        er_config.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2);
+        er_config.set_storage_spec(std::make_shared<EventReportStorageSpec>());
+        event_report_backend->Open(er_config, "test_trace");
     }
     auto dsm = registry_manager_->data_storage_manager_;
-    dsm->storage_map_["vineyard_default"] = vineyard_backend;
+    dsm->storage_map_["event_report_default"] = event_report_backend;
 
-    // Configure event_reporting_storage_candidates for the "default" instance group
-    registry_manager_->instance_group_configs_["default"]->set_event_reporting_storage_candidates({"vineyard_default"});
+    // Configure event_report_storage_candidates for the "default" instance group
+    registry_manager_->instance_group_configs_["default"]->set_event_report_storage_candidates(
+        {"event_report_default"});
 
-    // Inject V6D locations via ReportEvent
+    // Inject event report locations via ReportEvent
     struct PeerKeys {
         std::string host;
         std::vector<int64_t> keys;
@@ -2987,7 +3685,7 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
         proto::meta::ReportEventRequest req;
         req.set_instance_id("test_instance");
         req.set_host_ip_port(pd.host);
-        req.set_storage_type(proto::meta::ST_VINEYARD);
+        req.set_storage_type(proto::meta::ST_EVENT_REPORT_L2);
 
         auto *reg = req.add_events();
         reg->set_event_type(proto::meta::EVENT_NODE_REGISTER);
@@ -3001,7 +3699,7 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
             ba->set_medium("mem");
             auto *spec = ba->add_specs();
             spec->set_name("tp0");
-            spec->set_uri("vineyard://" + pd.host + "/mem");
+            spec->set_uri("event_report://" + pd.host + "/mem");
         }
 
         proto::meta::ReportEventResponse resp;
@@ -3023,10 +3721,10 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
         ASSERT_EQ(EC_BADARGS, ec);
     }
 
-    // --- Test 2: V6D PREFIX + NFS (NFS on 300,500,700 should not affect V6D peer selection) ---
+    // --- Test 2: EVENT_REPORT PREFIX + NFS (NFS on 300,500,700 should not affect event report peer selection) ---
     {
         std::vector<BackendSelector> selectors = {
-            {DataStorageType::DATA_STORAGE_TYPE_VINEYARD, LocationSelectStrategy::LSS_V6D_PREFIX},
+            {DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, LocationSelectStrategy::LSS_V6D_PREFIX},
             {DataStorageType::DATA_STORAGE_TYPE_NFS, LocationSelectStrategy::LSS_WEIGHTED_RANDOM},
         };
         BlockMask bm = static_cast<size_t>(0);
@@ -3043,33 +3741,33 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
         ASSERT_EQ(5u, locs.size());
 
         // peer_B wins with prefix=4 (keys 300,400,500,600)
-        // key 300 (index 0): V6D + NFS = 2
+        // key 300 (index 0): event report + NFS = 2
         {
             const auto &kl = locs[0].cache_locations_view();
             ASSERT_EQ(2u, kl.size());
             EXPECT_NE(std::string::npos, kl[0].location_specs()[0].uri().find("192.168.1.2"));
         }
-        // key 400 (index 1): V6D only = 1 (no NFS for 400)
+        // key 400 (index 1): event report only = 1 (no NFS for 400)
         {
             const auto &kl = locs[1].cache_locations_view();
             ASSERT_EQ(1u, kl.size());
-            EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_VINEYARD, kl[0].type());
+            EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, kl[0].type());
             EXPECT_NE(std::string::npos, kl[0].location_specs()[0].uri().find("192.168.1.2"));
         }
-        // key 500 (index 2): V6D + NFS = 2
+        // key 500 (index 2): event report + NFS = 2
         {
             const auto &kl = locs[2].cache_locations_view();
             ASSERT_EQ(2u, kl.size());
             EXPECT_NE(std::string::npos, kl[0].location_specs()[0].uri().find("192.168.1.2"));
         }
-        // key 600 (index 3): V6D only = 1 (no NFS for 600)
+        // key 600 (index 3): event report only = 1 (no NFS for 600)
         {
             const auto &kl = locs[3].cache_locations_view();
             ASSERT_EQ(1u, kl.size());
-            EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_VINEYARD, kl[0].type());
+            EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, kl[0].type());
             EXPECT_NE(std::string::npos, kl[0].location_specs()[0].uri().find("192.168.1.2"));
         }
-        // key 700 (index 4): NFS only = 1 (no V6D peer has this key)
+        // key 700 (index 4): NFS only = 1 (no event report peer has this key)
         {
             const auto &kl = locs[4].cache_locations_view();
             ASSERT_EQ(1u, kl.size());
@@ -3077,10 +3775,10 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
         }
     }
 
-    // --- Test 3: V6D COVERAGE + NFS (NFS presence does not affect V6D coverage selection) ---
+    // --- Test 3: EVENT_REPORT COVERAGE + NFS (NFS presence does not affect event report coverage selection) ---
     {
         std::vector<BackendSelector> selectors = {
-            {DataStorageType::DATA_STORAGE_TYPE_VINEYARD, LocationSelectStrategy::LSS_V6D_COVERAGE},
+            {DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, LocationSelectStrategy::LSS_V6D_COVERAGE},
             {DataStorageType::DATA_STORAGE_TYPE_NFS, LocationSelectStrategy::LSS_WEIGHTED_RANDOM},
         };
         BlockMask bm = static_cast<size_t>(0);
@@ -3097,17 +3795,17 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
         ASSERT_EQ(5u, locs.size());
 
         // peer_B covers most keys (300,400,500,600) = 4
-        // key 300 (index 0): V6D + NFS = 2
+        // key 300 (index 0): event report + NFS = 2
         ASSERT_EQ(2u, locs[0].cache_locations_view().size());
         EXPECT_NE(std::string::npos, locs[0].cache_locations_view()[0].location_specs()[0].uri().find("192.168.1.2"));
-        // key 400 (index 1): V6D only = 1
+        // key 400 (index 1): event report only = 1
         ASSERT_EQ(1u, locs[1].cache_locations_view().size());
-        EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_VINEYARD, locs[1].cache_locations_view()[0].type());
-        // key 500 (index 2): V6D + NFS = 2
+        EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, locs[1].cache_locations_view()[0].type());
+        // key 500 (index 2): event report + NFS = 2
         ASSERT_EQ(2u, locs[2].cache_locations_view().size());
-        // key 600 (index 3): V6D only = 1
+        // key 600 (index 3): event report only = 1
         ASSERT_EQ(1u, locs[3].cache_locations_view().size());
-        EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_VINEYARD, locs[3].cache_locations_view()[0].type());
+        EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, locs[3].cache_locations_view()[0].type());
         // key 700 (index 4): NFS only = 1
         ASSERT_EQ(1u, locs[4].cache_locations_view().size());
         EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_NFS, locs[4].cache_locations_view()[0].type());
@@ -3145,19 +3843,19 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
         EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_NFS, locs[4].cache_locations_view()[0].type());
     }
 
-    // --- Test 5: PREFIX stops when first key has no V6D, but NFS still works ---
+    // --- Test 5: PREFIX stops when first key has no event report, but NFS still works ---
     // keys = {700, 300, 400}; NFS exists for 700 and 300, not for 400
     {
-        std::vector<int64_t> keys_no_v6d_first = {700, 300, 400};
+        std::vector<int64_t> keys_no_er_first = {700, 300, 400};
         std::vector<BackendSelector> selectors = {
-            {DataStorageType::DATA_STORAGE_TYPE_VINEYARD, LocationSelectStrategy::LSS_V6D_PREFIX},
+            {DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, LocationSelectStrategy::LSS_V6D_PREFIX},
             {DataStorageType::DATA_STORAGE_TYPE_NFS, LocationSelectStrategy::LSS_WEIGHTED_RANDOM},
         };
         BlockMask bm = static_cast<size_t>(0);
         auto [ec, locs] = cache_manager_->GetCacheLocationsByBackend(request_context_.get(),
                                                                      "test_instance",
                                                                      CacheManager::QueryType::QT_BATCH_GET,
-                                                                     keys_no_v6d_first,
+                                                                     keys_no_er_first,
                                                                      {},
                                                                      bm,
                                                                      0,
@@ -3165,23 +3863,23 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
                                                                      selectors);
         ASSERT_EQ(EC_OK, ec);
         ASSERT_EQ(3u, locs.size());
-        // V6D PREFIX stops at key 700 → no V6D for any key
+        // EVENT_REPORT PREFIX stops at key 700 → no event report for any key
         // key 700 (index 0): NFS only = 1
         ASSERT_EQ(1u, locs[0].cache_locations_view().size());
         EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_NFS, locs[0].cache_locations_view()[0].type());
-        // key 300 (index 1): NFS only = 1 (V6D blocked by prefix)
+        // key 300 (index 1): NFS only = 1 (event report blocked by prefix)
         ASSERT_EQ(1u, locs[1].cache_locations_view().size());
         EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_NFS, locs[1].cache_locations_view()[0].type());
-        // key 400 (index 2): nothing (no V6D from prefix, no NFS written)
+        // key 400 (index 2): nothing (no event report from prefix, no NFS written)
         EXPECT_TRUE(locs[2].cache_locations_view().empty());
     }
 
-    // --- Test 6: COVERAGE skips keys with no V6D, NFS fills gaps independently ---
+    // --- Test 6: COVERAGE skips keys with no event report, NFS fills gaps independently ---
     // keys = {700, 300, 400}; NFS exists for 700 and 300, not for 400
     {
         std::vector<int64_t> keys_gap = {700, 300, 400};
         std::vector<BackendSelector> selectors = {
-            {DataStorageType::DATA_STORAGE_TYPE_VINEYARD, LocationSelectStrategy::LSS_V6D_COVERAGE},
+            {DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, LocationSelectStrategy::LSS_V6D_COVERAGE},
             {DataStorageType::DATA_STORAGE_TYPE_NFS, LocationSelectStrategy::LSS_WEIGHTED_RANDOM},
         };
         BlockMask bm = static_cast<size_t>(0);
@@ -3196,21 +3894,21 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
                                                                      selectors);
         ASSERT_EQ(EC_OK, ec);
         ASSERT_EQ(3u, locs.size());
-        // key 700 (index 0): NFS only = 1 (no V6D peer)
+        // key 700 (index 0): NFS only = 1 (no event report peer)
         ASSERT_EQ(1u, locs[0].cache_locations_view().size());
         EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_NFS, locs[0].cache_locations_view()[0].type());
-        // key 300 (index 1): V6D + NFS = 2
+        // key 300 (index 1): event report + NFS = 2
         ASSERT_EQ(2u, locs[1].cache_locations_view().size());
-        // key 400 (index 2): V6D only = 1 (no NFS for 400)
+        // key 400 (index 2): event report only = 1 (no NFS for 400)
         ASSERT_EQ(1u, locs[2].cache_locations_view().size());
-        EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_VINEYARD, locs[2].cache_locations_view()[0].type());
+        EXPECT_EQ(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, locs[2].cache_locations_view()[0].type());
     }
 
     // --- Test 7: nonexistent keys → all empty ---
     {
         std::vector<int64_t> bad_keys = {99998, 99999};
         std::vector<BackendSelector> selectors = {
-            {DataStorageType::DATA_STORAGE_TYPE_VINEYARD, LocationSelectStrategy::LSS_V6D_PREFIX},
+            {DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L2, LocationSelectStrategy::LSS_V6D_PREFIX},
             {DataStorageType::DATA_STORAGE_TYPE_NFS, LocationSelectStrategy::LSS_WEIGHTED_RANDOM},
         };
         BlockMask bm = static_cast<size_t>(0);
@@ -3251,6 +3949,1423 @@ TEST_F(CacheManagerTest, TestGetCacheLocationsByBackendWithBackendSelectors) {
         EXPECT_EQ(2u, kl[0].location_specs().size());
     }
 
-    dsm->storage_map_.erase("vineyard_default");
+    dsm->storage_map_.erase("event_report_default");
 }
+
+// =============================================================
+// GetHostCacheState — per-host prefix match length
+// =============================================================
+//
+// Data layout:
+//   3 hosts: A (10.0.0.1:8080), B (10.0.0.2:8080), C (10.0.0.3:8080)
+//   key 100: host_A, host_B, host_C
+//   key 200: host_A, host_B
+//   key 300: host_B only
+//   key 400: host_A, host_B
+//   key 500: no host
+//
+// Query keys = {100, 200, 300, 400, 500}
+//   host_A: 100→200→(miss 300) → prefix=2
+//   host_B: 100→200→300→400→(miss 500) → prefix=4
+//   host_C: 100→(miss 200) → prefix=1
+//
+TEST_F(CacheManagerTest, TestGetHostCacheState) {
+    auto expected_reg = std::pair<ErrorCode, std::string>(EC_OK, default_storage_configs);
+    const std::string instance_id = "test_host_cache_state_prefix";
+    ASSERT_EQ(expected_reg,
+              cache_manager_->RegisterInstance(request_context_.get(),
+                                               "default",
+                                               instance_id,
+                                               64,
+                                               createLocationSpecInfos(),
+                                               createModelDeployment(),
+                                               std::vector<LocationSpecGroup>(),
+                                               CacheManager::QueryType::QT_PREFIX_MATCH));
+
+    // Set up EventReportBackend so that location_ids carry host_ip_port
+    auto metrics_registry = cache_manager_->metrics_registry_;
+    auto event_backend = std::make_shared<EventReportBackend>(metrics_registry);
+    {
+        StorageConfig cfg;
+        cfg.set_global_unique_name("event_backend_default");
+        cfg.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+        cfg.set_storage_spec(std::make_shared<EventReportStorageSpec>());
+        event_backend->Open(cfg, "test_trace");
+    }
+    auto dsm = registry_manager_->data_storage_manager_;
+    dsm->storage_map_["event_backend_default"] = event_backend;
+    registry_manager_->instance_group_configs_["default"]->set_event_report_storage_candidates(
+        {"event_backend_default"});
+
+    // Inject cache locations via ReportEvent — each host reports a subset of keys
+    struct HostKeys {
+        std::string host;
+        std::vector<int64_t> keys;
+    };
+    std::vector<HostKeys> host_data = {
+        {"10.0.0.1:8080", {100, 200, 400}},
+        {"10.0.0.2:8080", {100, 200, 300, 400}},
+        {"10.0.0.3:8080", {100}},
+        {"10.0.0.4:8080", {200, 300}},
+    };
+    for (const auto &hd : host_data) {
+        proto::meta::ReportEventRequest req;
+        req.set_instance_id(instance_id);
+        req.set_host_ip_port(hd.host);
+        req.set_storage_type(proto::meta::ST_EVENT_REPORT_L1P5);
+
+        auto *reg = req.add_events();
+        reg->set_event_type(proto::meta::EVENT_NODE_REGISTER);
+        reg->mutable_node_register()->add_mediums("mem");
+
+        for (int64_t key : hd.keys) {
+            auto *ev = req.add_events();
+            ev->set_event_type(proto::meta::EVENT_BLOCK_ADD);
+            auto *ba = ev->mutable_block_add();
+            ba->set_block_key(std::to_string(key));
+            ba->set_medium("mem");
+            auto *spec = ba->add_specs();
+            spec->set_name("tp0");
+            spec->set_uri("event_report://" + hd.host + "/mem");
+        }
+
+        proto::meta::ReportEventResponse resp;
+        ASSERT_EQ(EC_OK, cache_manager_->ReportEvent(request_context_.get(), &req, &resp));
+    }
+
+    // Helper: find a host's prefix_match_blocks in the result
+    auto find_prefix = [](const std::vector<CacheManager::HostCacheMatch> &hosts, const std::string &host) -> int64_t {
+        for (const auto &h : hosts) {
+            if (h.host_ip_port == host) {
+                return h.prefix_match_blocks;
+            }
+        }
+        return -1; // not found
+    };
+
+    // --- Test 1: full query — different prefix lengths per host ---
+    // keys = {100, 200, 300, 400, 500}
+    //   host_A: prefix=2 (100,200; miss 300)
+    //   host_B: prefix=4 (100,200,300,400; miss 500)
+    //   host_C: prefix=1 (100; miss 200)
+    {
+        CacheManager::KeyVector keys = {100, 200, 300, 400, 500};
+        auto [ec, hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH, keys);
+        ASSERT_EQ(EC_OK, ec);
+        ASSERT_EQ(3, hosts.size());
+
+        EXPECT_EQ(2, find_prefix(hosts, "10.0.0.1:8080"));
+        EXPECT_EQ(4, find_prefix(hosts, "10.0.0.2:8080"));
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.3:8080"));
+    }
+
+    // --- Test 1b: unspecified query type falls back to RegisterInstance.default_query_type ---
+    {
+        CacheManager::KeyVector keys = {100, 200, 300, 400, 500};
+        auto [ec, hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_UNSPECIFIED, keys);
+        ASSERT_EQ(EC_OK, ec);
+        ASSERT_EQ(3, hosts.size());
+
+        EXPECT_EQ(2, find_prefix(hosts, "10.0.0.1:8080"));
+        EXPECT_EQ(4, find_prefix(hosts, "10.0.0.2:8080"));
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.3:8080"));
+    }
+
+    // --- Test 2: all keys cached by host_B → prefix = full length ---
+    // keys = {100, 200, 300, 400}
+    //   host_A: prefix=2 (miss 300)
+    //   host_B: prefix=4 (all matched)
+    //   host_C: prefix=1 (miss 200)
+    {
+        CacheManager::KeyVector keys = {100, 200, 300, 400};
+        auto [ec, hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH, keys);
+        ASSERT_EQ(EC_OK, ec);
+        ASSERT_EQ(3, hosts.size());
+
+        EXPECT_EQ(2, find_prefix(hosts, "10.0.0.1:8080"));
+        EXPECT_EQ(4, find_prefix(hosts, "10.0.0.2:8080"));
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.3:8080"));
+    }
+
+    // --- Test 3: single key — all hosts have prefix=1 ---
+    {
+        CacheManager::KeyVector keys = {100};
+        auto [ec, hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH, keys);
+        ASSERT_EQ(EC_OK, ec);
+        ASSERT_EQ(3, hosts.size());
+
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.1:8080"));
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.2:8080"));
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.3:8080"));
+    }
+
+    // --- Test 4: first key not cached by any host → empty response ---
+    // keys = {999, 100, 200}
+    {
+        CacheManager::KeyVector keys = {999, 100, 200};
+        auto [ec, hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH, keys);
+        ASSERT_EQ(EC_OK, ec);
+        EXPECT_EQ(0, hosts.size());
+    }
+
+    // --- Test 5: medium filter (only "mem") — should not change results ---
+    {
+        CacheManager::KeyVector keys = {100, 200, 300, 400, 500};
+        auto [ec, hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH, keys, {"mem"});
+        ASSERT_EQ(EC_OK, ec);
+        ASSERT_EQ(3, hosts.size());
+
+        EXPECT_EQ(2, find_prefix(hosts, "10.0.0.1:8080"));
+        EXPECT_EQ(4, find_prefix(hosts, "10.0.0.2:8080"));
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.3:8080"));
+    }
+
+    // --- Test 6: medium filter (non-existent medium "ssd") → no hosts ---
+    {
+        CacheManager::KeyVector keys = {100, 200};
+        auto [ec, hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH, keys, {"ssd"});
+        ASSERT_EQ(EC_OK, ec);
+        EXPECT_EQ(0, hosts.size());
+    }
+
+    // --- Test 7: middle miss stops prefix; later hits do not extend any host ---
+    {
+        CacheManager::KeyVector keys = {100, 500, 400};
+        auto [ec, hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH, keys);
+        ASSERT_EQ(EC_OK, ec);
+        ASSERT_EQ(3, hosts.size());
+
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.1:8080"));
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.2:8080"));
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.3:8080"));
+        EXPECT_EQ(-1, find_prefix(hosts, "10.0.0.4:8080"));
+    }
+
+    // --- Test 8: hosts absent from the first key are not returned with prefix=0 ---
+    {
+        CacheManager::KeyVector keys = {100, 200, 300};
+        auto [ec, hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH, keys);
+        ASSERT_EQ(EC_OK, ec);
+        ASSERT_EQ(3, hosts.size());
+
+        EXPECT_EQ(2, find_prefix(hosts, "10.0.0.1:8080"));
+        EXPECT_EQ(3, find_prefix(hosts, "10.0.0.2:8080"));
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.3:8080"));
+        EXPECT_EQ(-1, find_prefix(hosts, "10.0.0.4:8080"));
+    }
+
+    // --- Test 9: unavailable host is filtered even before metadata cleanup ---
+    {
+        event_backend->SetNodeUnavailable(instance_id, "10.0.0.2:8080");
+        CacheManager::KeyVector keys = {100, 200, 300, 400};
+        auto [ec, hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH, keys);
+        ASSERT_EQ(EC_OK, ec);
+        ASSERT_EQ(2, hosts.size());
+
+        EXPECT_EQ(2, find_prefix(hosts, "10.0.0.1:8080"));
+        EXPECT_EQ(-1, find_prefix(hosts, "10.0.0.2:8080"));
+        EXPECT_EQ(1, find_prefix(hosts, "10.0.0.3:8080"));
+    }
+
+    dsm->storage_map_.erase("event_backend_default");
+}
+
+TEST_F(CacheManagerTest, TestGetHostCacheStateUnspecifiedWithoutRegisteredQueryType) {
+    auto expected_reg = std::pair<ErrorCode, std::string>(EC_OK, default_storage_configs);
+    const std::string instance_id = "test_host_cache_state_no_query_type";
+    ASSERT_EQ(expected_reg,
+              cache_manager_->RegisterInstance(request_context_.get(),
+                                               "default",
+                                               instance_id,
+                                               64,
+                                               createLocationSpecInfos(),
+                                               createModelDeployment(),
+                                               std::vector<LocationSpecGroup>()));
+
+    CacheManager::KeyVector keys = {100};
+    auto [ec, hosts] = cache_manager_->GetHostCacheState(
+        request_context_.get(), instance_id, CacheManager::QueryType::QT_UNSPECIFIED, keys);
+    EXPECT_EQ(EC_ERROR, ec);
+    EXPECT_TRUE(hosts.empty());
+}
+
+TEST_F(CacheManagerTest, TestGetHostCacheStatePrefixMatchWithMamba) {
+    auto expected_reg = std::pair<ErrorCode, std::string>(EC_OK, default_storage_configs);
+    const std::string instance_id = "test_host_cache_state_mamba";
+    std::vector<LocationSpecInfo> location_spec_infos = {
+        LocationSpecInfo("full_0", 512),
+        LocationSpecInfo("linear_0", 512),
+        LocationSpecInfo("linear_1", 512),
+    };
+    std::vector<LocationSpecGroup> location_spec_groups = {
+        LocationSpecGroup("full_0", {"full_0"}),
+        LocationSpecGroup("linear_0", {"linear_0"}),
+        LocationSpecGroup("linear_1", {"linear_1"}),
+    };
+    ASSERT_EQ(expected_reg,
+              cache_manager_->RegisterInstance(request_context_.get(),
+                                               "default",
+                                               instance_id,
+                                               64,
+                                               location_spec_infos,
+                                               createModelDeployment(),
+                                               location_spec_groups,
+                                               CacheManager::QueryType::QT_PREFIX_MATCH_WITH_MAMBA));
+
+    auto metrics_registry = cache_manager_->metrics_registry_;
+    auto event_backend = std::make_shared<EventReportBackend>(metrics_registry);
+    {
+        StorageConfig cfg;
+        cfg.set_global_unique_name("event_backend_mamba");
+        cfg.set_type(DataStorageType::DATA_STORAGE_TYPE_EVENT_REPORT_L1P5);
+        cfg.set_storage_spec(std::make_shared<EventReportStorageSpec>());
+        event_backend->Open(cfg, "test_trace");
+    }
+    auto dsm = registry_manager_->data_storage_manager_;
+    dsm->storage_map_["event_backend_mamba"] = event_backend;
+    registry_manager_->instance_group_configs_["default"]->set_event_report_storage_candidates({"event_backend_mamba"});
+
+    auto report_specs = [&](const std::string &host, int64_t key, const std::vector<std::string> &spec_names) {
+        proto::meta::ReportEventRequest req;
+        req.set_instance_id(instance_id);
+        req.set_host_ip_port(host);
+        req.set_storage_type(proto::meta::ST_EVENT_REPORT_L1P5);
+
+        auto *reg = req.add_events();
+        reg->set_event_type(proto::meta::EVENT_NODE_REGISTER);
+        reg->mutable_node_register()->add_mediums("mem");
+
+        auto *ev = req.add_events();
+        ev->set_event_type(proto::meta::EVENT_BLOCK_ADD);
+        auto *ba = ev->mutable_block_add();
+        ba->set_block_key(std::to_string(key));
+        ba->set_medium("mem");
+        for (const auto &spec_name : spec_names) {
+            auto *spec = ba->add_specs();
+            spec->set_name(spec_name);
+            spec->set_uri("event_report://" + host + "/mem");
+        }
+
+        proto::meta::ReportEventResponse resp;
+        ASSERT_EQ(EC_OK, cache_manager_->ReportEvent(request_context_.get(), &req, &resp));
+    };
+
+    const std::string host_a = "10.0.1.1:8080";
+    const std::string host_b = "10.0.1.2:8080";
+    const std::string host_c = "10.0.1.3:8080";
+
+    report_specs(host_a, 100, {"full_0", "linear_0", "linear_1"});
+    report_specs(host_a, 200, {"full_0"});
+    report_specs(host_a, 300, {"full_0"});
+    report_specs(host_a, 300, {"linear_0", "linear_1"});
+    report_specs(host_a, 400, {"full_0", "linear_0"});
+
+    report_specs(host_b, 100, {"full_0"});
+    report_specs(host_b, 200, {"full_0"});
+    report_specs(host_b, 300, {"full_0"});
+    report_specs(host_b, 400, {"full_0", "linear_0", "linear_1"});
+
+    report_specs(host_c, 100, {"full_0"});
+    report_specs(host_c, 200, {"full_0"});
+
+    const std::string host_d = "10.0.1.4:8080";
+    report_specs(host_d, 200, {"full_0", "linear_0", "linear_1"});
+    report_specs(host_d, 300, {"full_0", "linear_0", "linear_1"});
+
+    auto find_prefix = [](const std::vector<CacheManager::HostCacheMatch> &hosts, const std::string &host) -> int64_t {
+        for (const auto &h : hosts) {
+            if (h.host_ip_port == host) {
+                return h.prefix_match_blocks;
+            }
+        }
+        return -1;
+    };
+
+    CacheManager::KeyVector keys = {100, 200, 300, 400, 500};
+    auto [ec, hosts] = cache_manager_->GetHostCacheState(
+        request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH_WITH_MAMBA, keys);
+    ASSERT_EQ(EC_OK, ec);
+
+    auto expect_mamba_matches = [&](const std::vector<CacheManager::HostCacheMatch> &matches) {
+        EXPECT_EQ(3, find_prefix(matches, host_a));
+        EXPECT_EQ(4, find_prefix(matches, host_b));
+        EXPECT_EQ(-1, find_prefix(matches, host_c));
+        EXPECT_EQ(-1, find_prefix(matches, host_d));
+    };
+    expect_mamba_matches(hosts);
+
+    // An explicit request query type takes precedence over the registered default.
+    auto [explicit_ec, explicit_hosts] = cache_manager_->GetHostCacheState(
+        request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH, keys);
+    ASSERT_EQ(EC_OK, explicit_ec);
+    EXPECT_EQ(4, find_prefix(explicit_hosts, host_a));
+    EXPECT_EQ(4, find_prefix(explicit_hosts, host_b));
+    EXPECT_EQ(2, find_prefix(explicit_hosts, host_c));
+    EXPECT_EQ(-1, find_prefix(explicit_hosts, host_d));
+
+    auto [fallback_ec, fallback_hosts] = cache_manager_->GetHostCacheState(
+        request_context_.get(), instance_id, CacheManager::QueryType::QT_UNSPECIFIED, keys);
+    ASSERT_EQ(EC_OK, fallback_ec);
+    expect_mamba_matches(fallback_hosts);
+
+    {
+        CacheManager::KeyVector break_keys = {100, 500, 400};
+        auto [break_ec, break_hosts] = cache_manager_->GetHostCacheState(
+            request_context_.get(), instance_id, CacheManager::QueryType::QT_PREFIX_MATCH_WITH_MAMBA, break_keys);
+        ASSERT_EQ(EC_OK, break_ec);
+        EXPECT_EQ(1, find_prefix(break_hosts, host_a));
+        EXPECT_EQ(-1, find_prefix(break_hosts, host_b));
+        EXPECT_EQ(-1, find_prefix(break_hosts, host_c));
+        EXPECT_EQ(-1, find_prefix(break_hosts, host_d));
+    }
+
+    {
+        CacheManager::KeyVector keys_without_host_d_first = {100, 200, 300};
+        auto [absent_ec, absent_hosts] =
+            cache_manager_->GetHostCacheState(request_context_.get(),
+                                              instance_id,
+                                              CacheManager::QueryType::QT_PREFIX_MATCH_WITH_MAMBA,
+                                              keys_without_host_d_first);
+        ASSERT_EQ(EC_OK, absent_ec);
+        EXPECT_EQ(3, find_prefix(absent_hosts, host_a));
+        EXPECT_EQ(-1, find_prefix(absent_hosts, host_b));
+        EXPECT_EQ(-1, find_prefix(absent_hosts, host_c));
+        EXPECT_EQ(-1, find_prefix(absent_hosts, host_d));
+    }
+
+    dsm->storage_map_.erase("event_backend_mamba");
+}
+// ===== 多层存储 Mark 消费（写路径）=====
+
+// FilterWriteCache 统一入口：命中 mark 的 block 记录目标冷 storage（未命中为空）
+TEST_F(CacheManagerTest, TestFilterWriteCacheTieredMarkPropagation) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "placeholder_id",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("placeholder_id");
+    ASSERT_TRUE(meta_searcher);
+
+    // 持久化打标要求 block 先存在：给 block 1 建一个 location。
+    {
+        auto loc = std::make_shared<CacheLocation>(
+            DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+            1,
+            std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot/blk1?size=1")});
+        std::vector<std::string> ids;
+        ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {loc}, ids));
+    }
+    cache_manager_->migration_manager()->MarkForTieredWrite("placeholder_id", {1}, "cold_01");
+
+    CacheManager::KeyVector keys = {1, 2};
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    auto ec = cache_manager_->FilterWriteCache(
+        request_context_.get(), "placeholder_id", meta_searcher, keys, new_keys, {}, new_sgn, block_mask, 1, new_targets);
+    ASSERT_EQ(EC_OK, ec);
+    ASSERT_EQ(2u, new_keys.size());
+    ASSERT_EQ(new_keys.size(), new_targets.size());
+    for (size_t i = 0; i < new_keys.size(); ++i) {
+        if (new_keys[i] == 1) {
+            ASSERT_EQ("cold_01", new_targets[i]); // 命中 mark -> 目标冷 storage
+        } else {
+            ASSERT_EQ("", new_targets[i]); // 未命中 -> 空（走默认）
+        }
+    }
+}
+
+TEST_F(CacheManagerTest, TestFilterWriteCacheFallsBackToOrdinaryPolicyOnMarkReadError) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "mark_read_error",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("mark_read_error");
+    ASSERT_TRUE(meta_searcher);
+
+    auto hot_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot_01/mark_read_error?size=1")});
+    std::vector<std::string> ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {hot_loc}, ids));
+    ASSERT_EQ(1u, ids.size());
+    std::vector<std::vector<MetaSearcher::LocationCASTask>> cas_tasks{
+        {MetaSearcher::LocationCASTask{ids[0], CLS_WRITING, CLS_SERVING}}};
+    std::vector<std::vector<ErrorCode>> cas_results;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchCASLocationStatus(request_context_.get(), {1}, cas_tasks, cas_results));
+
+    Stub stub;
+    stub.set(ADDR(MigrationManager, BatchGetTieredWriteTargets), mark_query_read_error_stub::ReadError_stub);
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    ASSERT_EQ(EC_OK,
+              cache_manager_->FilterWriteCache(request_context_.get(),
+                                               "mark_read_error",
+                                               meta_searcher,
+                                               {1},
+                                               new_keys,
+                                               {},
+                                               new_sgn,
+                                               block_mask,
+                                               1,
+                                               new_targets));
+
+    ASSERT_TRUE(new_keys.empty());
+    ASSERT_TRUE(new_targets.empty());
+}
+
+TEST_F(CacheManagerTest, TestFilterWriteCacheInvalidTieredTargetUsesOrdinaryPolicy) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "invalid_tiered_target",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("invalid_tiered_target");
+    ASSERT_TRUE(meta_searcher);
+
+    auto hot_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot_01/invalid_target?size=1")});
+    std::vector<std::string> ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {hot_loc}, ids));
+    ASSERT_EQ(1u, ids.size());
+    std::vector<std::vector<MetaSearcher::LocationCASTask>> cas_tasks{
+        {MetaSearcher::LocationCASTask{ids[0], CLS_WRITING, CLS_SERVING}}};
+    std::vector<std::vector<ErrorCode>> cas_results;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchCASLocationStatus(request_context_.get(), {1}, cas_tasks, cas_results));
+    ASSERT_EQ(EC_OK, cache_manager_->migration_manager()->MarkForTieredWrite("invalid_tiered_target", {1}, "cold_01"));
+    ASSERT_TRUE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("invalid_tiered_target", 1));
+
+    // Mark 创建后 target backend 被注销；hot 副本已满足普通策略，不应 fallback 再写一份 hot。
+    ASSERT_EQ(EC_OK, registry_manager_->data_storage_manager()->UnRegisterStorage("cold_01"));
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    ASSERT_EQ(EC_OK,
+              cache_manager_->FilterWriteCache(request_context_.get(),
+                                               "invalid_tiered_target",
+                                               meta_searcher,
+                                               {1},
+                                               new_keys,
+                                               {},
+                                               new_sgn,
+                                               block_mask,
+                                               1,
+                                               new_targets));
+
+    ASSERT_TRUE(new_keys.empty());
+    ASSERT_TRUE(new_targets.empty());
+    ASSERT_FALSE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("invalid_tiered_target", 1));
+}
+
+TEST_F(CacheManagerTest, TestFilterWriteCacheUnavailableTieredTargetUsesOrdinaryPolicyAndKeepsMark) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "unavailable_tiered_target",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher =
+        cache_manager_->meta_searcher_manager_->GetMetaSearcher("unavailable_tiered_target");
+    ASSERT_TRUE(meta_searcher);
+
+    auto hot_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot_01/unavailable_target?size=1")});
+    std::vector<std::string> ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {hot_loc}, ids));
+    std::vector<std::vector<MetaSearcher::LocationCASTask>> cas_tasks{
+        {MetaSearcher::LocationCASTask{ids[0], CLS_WRITING, CLS_SERVING}}};
+    std::vector<std::vector<ErrorCode>> cas_results;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchCASLocationStatus(request_context_.get(), {1}, cas_tasks, cas_results));
+    ASSERT_EQ(EC_OK,
+              cache_manager_->migration_manager()->MarkForTieredWrite(
+                  "unavailable_tiered_target", {1}, "cold_01"));
+    ASSERT_EQ(EC_OK, registry_manager_->DisableStorage(request_context_.get(), "cold_01"));
+
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    ASSERT_EQ(EC_OK,
+              cache_manager_->FilterWriteCache(request_context_.get(),
+                                               "unavailable_tiered_target",
+                                               meta_searcher,
+                                               {1},
+                                               new_keys,
+                                               {},
+                                               new_sgn,
+                                               block_mask,
+                                               1,
+                                               new_targets));
+    ASSERT_TRUE(new_keys.empty());
+    ASSERT_TRUE(new_targets.empty());
+    ASSERT_TRUE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("unavailable_tiered_target", 1));
+}
+
+TEST_F(CacheManagerTest, TestMigrationTargetsRespectGroupQuota) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->StartMigrationManager();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "migration_target_quota",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    auto default_group = registry_manager_->instance_group_configs_["default"];
+    ASSERT_NE(nullptr, default_group);
+    default_group->set_quota(InstanceGroupQuota(0, {}));
+
+    EXPECT_EQ(EC_NOSPC,
+              cache_manager_->migration_manager()->MarkForTieredWrite(
+                  "migration_target_quota", {1}, "cold_01"));
+    EXPECT_FALSE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("migration_target_quota", 1));
+
+    MigrationManager::MigrationRequest request;
+    request.instance_group_name = "default";
+    request.instance_id = "migration_target_quota";
+    request.block_key = 1;
+    request.src_location_id = "source_location";
+    request.src_storage_name = "hot_01";
+    request.dst_storage_name = "cold_01";
+    request.src_specs = {LocationSpec("tp0", "dummy://hot_01/source?size=1")};
+    const auto results = cache_manager_->migration_manager()->BatchSubmit("target-quota", {request});
+    ASSERT_EQ(1u, results.size());
+    EXPECT_EQ(EC_NOSPC, results[0]);
+    EXPECT_EQ(0u, cache_manager_->migration_manager()->GetStats().active_copy_tasks);
+}
+
+TEST_F(CacheManagerTest, TestFilterWriteCacheWithMinReplicaFallsBackOnMarkReadError) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "min_replica_mark_read_error",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher =
+        cache_manager_->meta_searcher_manager_->GetMetaSearcher("min_replica_mark_read_error");
+    ASSERT_TRUE(meta_searcher);
+
+    auto make_hot_loc = [](const std::string &uri) {
+        return std::make_shared<CacheLocation>(
+            DataStorageType::DATA_STORAGE_TYPE_DUMMY, 1, std::vector<LocationSpec>{LocationSpec("tp0", uri)});
+    };
+    for (const auto &uri : {"dummy://hot_01/mark_read_error_a?size=1", "dummy://hot_02/mark_read_error_b?size=1"}) {
+        std::vector<std::string> ids;
+        ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {make_hot_loc(uri)}, ids));
+        ASSERT_EQ(1u, ids.size());
+        std::vector<std::vector<MetaSearcher::LocationCASTask>> cas_tasks{
+            {MetaSearcher::LocationCASTask{ids[0], CLS_WRITING, CLS_SERVING}}};
+        std::vector<std::vector<ErrorCode>> cas_results;
+        ASSERT_EQ(EC_OK, meta_searcher->BatchCASLocationStatus(request_context_.get(), {1}, cas_tasks, cas_results));
+    }
+
+    Stub stub;
+    stub.set(ADDR(MigrationManager, BatchGetTieredWriteTargets), mark_query_read_error_stub::ReadError_stub);
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    ASSERT_EQ(EC_OK,
+              cache_manager_->FilterWriteCache(request_context_.get(),
+                                               "min_replica_mark_read_error",
+                                               meta_searcher,
+                                               {1},
+                                               new_keys,
+                                               {},
+                                               new_sgn,
+                                               block_mask,
+                                               2,
+                                               new_targets));
+
+    ASSERT_TRUE(new_keys.empty());
+    ASSERT_TRUE(new_targets.empty());
+}
+
+TEST_F(CacheManagerTest, TestFilterWriteCacheWithMinReplicaInvalidTieredTargetUsesOrdinaryPolicy) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "min_replica_invalid_target",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("min_replica_invalid_target");
+    ASSERT_TRUE(meta_searcher);
+
+    auto add_serving_location = [&](int64_t block_key, const std::string &uri) {
+        auto loc = std::make_shared<CacheLocation>(
+            DataStorageType::DATA_STORAGE_TYPE_DUMMY, 1, std::vector<LocationSpec>{LocationSpec("tp0", uri)});
+        std::vector<std::string> ids;
+        ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {block_key}, {loc}, ids));
+        ASSERT_EQ(1u, ids.size());
+        std::vector<std::vector<MetaSearcher::LocationCASTask>> cas_tasks{
+            {MetaSearcher::LocationCASTask{ids[0], CLS_WRITING, CLS_SERVING}}};
+        std::vector<std::vector<ErrorCode>> cas_results;
+        ASSERT_EQ(EC_OK,
+                  meta_searcher->BatchCASLocationStatus(request_context_.get(), {block_key}, cas_tasks, cas_results));
+    };
+    // block 1 已有两个普通副本，block 2 只有一个；min_replica_count=2。
+    add_serving_location(1, "dummy://hot_01/min_replica_invalid_1a?size=1");
+    add_serving_location(1, "dummy://hot_02/min_replica_invalid_1b?size=1");
+    add_serving_location(2, "dummy://hot_01/min_replica_invalid_2?size=1");
+    ASSERT_EQ(EC_OK,
+              cache_manager_->migration_manager()->MarkForTieredWrite("min_replica_invalid_target", {1, 2}, "cold_01"));
+
+    ASSERT_EQ(EC_OK, registry_manager_->data_storage_manager()->UnRegisterStorage("cold_01"));
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    ASSERT_EQ(EC_OK,
+              cache_manager_->FilterWriteCache(request_context_.get(),
+                                               "min_replica_invalid_target",
+                                               meta_searcher,
+                                               {1, 2},
+                                               new_keys,
+                                               {},
+                                               new_sgn,
+                                               block_mask,
+                                               2,
+                                               new_targets));
+
+    // 失效 Mark 不再强制写：已满足的 block 1 跳过；未满足的 block 2 按普通策略走默认层。
+    ASSERT_EQ((CacheManager::KeyVector{2}), new_keys);
+    ASSERT_EQ(1u, new_targets.size());
+    ASSERT_TRUE(new_targets[0].empty());
+    ASSERT_FALSE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("min_replica_invalid_target", 1));
+    ASSERT_FALSE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("min_replica_invalid_target", 2));
+}
+
+TEST_F(CacheManagerTest, TestFilterWriteCacheSkipsTieredMarkWhenMigrationDisabled) {
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "tiered_disabled",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("tiered_disabled");
+    ASSERT_TRUE(meta_searcher);
+
+    auto hot_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot_01/blk1?size=1")});
+    std::vector<std::string> ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {hot_loc}, ids));
+    ASSERT_EQ(EC_OK, cache_manager_->migration_manager()->MarkForTieredWrite("tiered_disabled", {1}, "cold_01"));
+
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    auto ec = cache_manager_->FilterWriteCache(request_context_.get(),
+                                               "tiered_disabled",
+                                               meta_searcher,
+                                               {1},
+                                               new_keys,
+                                               {},
+                                               new_sgn,
+                                               block_mask,
+                                               1,
+                                               new_targets);
+    ASSERT_EQ(EC_OK, ec);
+    ASSERT_TRUE(new_keys.empty());
+    ASSERT_TRUE(new_targets.empty());
+}
+
+TEST_F(CacheManagerTest, TestFilterWriteCacheTieredMarkSkipsExistingTarget) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "placeholder_id",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("placeholder_id");
+    ASSERT_TRUE(meta_searcher);
+
+    auto writing_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        4,
+        std::vector<LocationSpec>{
+            LocationSpec("tp0", "dummy://cold_01/blk1/tp0?size=1"),
+            LocationSpec("tp1", "dummy://cold_01/blk1/tp1?size=1"),
+            LocationSpec("tp2", "dummy://cold_01/blk1/tp2?size=1"),
+            LocationSpec("tp3", "dummy://cold_01/blk1/tp3?size=1"),
+        });
+    auto serving_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        4,
+        std::vector<LocationSpec>{
+            LocationSpec("tp0", "dummy://cold_01/blk2/tp0?size=1"),
+            LocationSpec("tp1", "dummy://cold_01/blk2/tp1?size=1"),
+            LocationSpec("tp2", "dummy://cold_01/blk2/tp2?size=1"),
+            LocationSpec("tp3", "dummy://cold_01/blk2/tp3?size=1"),
+        });
+    std::vector<std::string> ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1, 2}, {writing_loc, serving_loc}, ids));
+    ASSERT_EQ(2u, ids.size());
+    std::vector<std::vector<MetaSearcher::LocationCASTask>> cas_tasks{
+        {MetaSearcher::LocationCASTask{ids[1], CLS_WRITING, CLS_SERVING}}};
+    std::vector<std::vector<ErrorCode>> cas_results;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchCASLocationStatus(request_context_.get(), {2}, cas_tasks, cas_results));
+    cache_manager_->migration_manager()->MarkForTieredWrite("placeholder_id", {1, 2}, "cold_01");
+
+    CacheManager::KeyVector keys = {1, 2};
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    auto ec = cache_manager_->FilterWriteCache(
+        request_context_.get(), "placeholder_id", meta_searcher, keys, new_keys, {}, new_sgn, block_mask, 1, new_targets);
+    ASSERT_EQ(EC_OK, ec);
+    ASSERT_TRUE(new_keys.empty());
+    ASSERT_TRUE(new_targets.empty());
+}
+
+// 冷层 target 有 CLS_SERVING location 但数据已丢（MightExist=false）时，marked write 不应因
+// meta 仍 SERVING 就跳过；应视 target 未满足 → block 进待写集并路由回 cold_01。stale 判断复用普通路径
+// 的 prune 结果(同一次 Exist)，不额外查后端。
+TEST_F(CacheManagerTest, TestFilterWriteCacheTieredStaleTargetTriggersRewrite) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "stale_tier_instance",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("stale_tier_instance");
+    ASSERT_TRUE(meta_searcher);
+
+    // block 1: 冷层 cold_01 上有一个覆盖全 spec 的 SERVING location。
+    auto cold_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        4,
+        std::vector<LocationSpec>{
+            LocationSpec("tp0", "dummy://cold_01/blk1/tp0?size=1"),
+            LocationSpec("tp1", "dummy://cold_01/blk1/tp1?size=1"),
+            LocationSpec("tp2", "dummy://cold_01/blk1/tp2?size=1"),
+            LocationSpec("tp3", "dummy://cold_01/blk1/tp3?size=1"),
+        });
+    std::vector<std::string> ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {cold_loc}, ids));
+    ASSERT_EQ(1u, ids.size());
+    std::vector<std::vector<MetaSearcher::LocationCASTask>> cas_tasks{
+        {MetaSearcher::LocationCASTask{ids[0], CLS_WRITING, CLS_SERVING}}};
+    std::vector<std::vector<ErrorCode>> cas_results;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchCASLocationStatus(request_context_.get(), {1}, cas_tasks, cas_results));
+    cache_manager_->migration_manager()->MarkForTieredWrite("stale_tier_instance", {1}, "cold_01");
+    ASSERT_TRUE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("stale_tier_instance", 1));
+
+    // 让 cold_01 的数据 MightExist=false(模拟数据被驱逐/丢失)——此时 meta 仍 SERVING，但数据不在。
+    auto dsm = registry_manager_->data_storage_manager_;
+    auto original = dsm->storage_map_["cold_01"];
+    dsm->storage_map_["cold_01"] = std::make_shared<MightExistInterceptor>(
+        original, [](const std::vector<DataStorageUri> &uris) { return std::vector<bool>(uris.size(), false); });
+
+    CacheManager::KeyVector keys = {1};
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    auto ec = cache_manager_->FilterWriteCache(request_context_.get(),
+                                               "stale_tier_instance",
+                                               meta_searcher,
+                                               keys,
+                                               new_keys,
+                                               {},
+                                               new_sgn,
+                                               block_mask,
+                                               1,
+                                               new_targets);
+    dsm->storage_map_["cold_01"] = original;
+
+    ASSERT_EQ(EC_OK, ec);
+    // 关键:stale 冷层 target 被视为未满足 → block 1 需重写且路由回 cold_01(而非误判已满足跳过)。
+    ASSERT_EQ(1u, new_keys.size());
+    ASSERT_EQ(1, new_keys[0]);
+    ASSERT_EQ(1u, new_targets.size());
+    ASSERT_EQ("cold_01", new_targets[0]);
+}
+
+TEST_F(CacheManagerTest, TestFilterWriteCacheWithMinReplicaUsesTieredMarkTarget) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "min_replica_tiered",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("min_replica_tiered");
+    ASSERT_TRUE(meta_searcher);
+
+    auto hot_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot_01/blk1?size=1")});
+    std::vector<std::string> ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {hot_loc}, ids));
+    cache_manager_->migration_manager()->MarkForTieredWrite("min_replica_tiered", {1}, "cold_01");
+
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    auto ec = cache_manager_->FilterWriteCache(request_context_.get(),
+                                               "min_replica_tiered",
+                                               meta_searcher,
+                                               {1},
+                                               new_keys,
+                                               {},
+                                               new_sgn,
+                                               block_mask,
+                                               2,
+                                               new_targets);
+    ASSERT_EQ(EC_OK, ec);
+    ASSERT_EQ(1u, new_keys.size());
+    ASSERT_EQ(1, new_keys[0]);
+    ASSERT_EQ(1u, new_targets.size());
+    ASSERT_EQ("cold_01", new_targets[0]);
+}
+
+TEST_F(CacheManagerTest, TestFilterWriteCacheWithMinReplicaHonorsTieredMarkWhenReplicaSatisfied) {
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "min_replica_satisfied_tiered",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher =
+        cache_manager_->meta_searcher_manager_->GetMetaSearcher("min_replica_satisfied_tiered");
+    ASSERT_TRUE(meta_searcher);
+
+    auto make_hot_loc = [](const std::string &uri) {
+        return std::make_shared<CacheLocation>(
+            DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+            1,
+            std::vector<LocationSpec>{LocationSpec("tp0", uri)});
+    };
+    std::vector<std::string> ids;
+    ASSERT_EQ(EC_OK,
+              meta_searcher->BatchAddLocation(
+                  request_context_.get(), {1}, {make_hot_loc("dummy://hot_01/blk1_a?size=1")}, ids));
+    ASSERT_EQ(1u, ids.size());
+    std::vector<std::vector<MetaSearcher::LocationCASTask>> cas_tasks{
+        {MetaSearcher::LocationCASTask{ids[0], CLS_WRITING, CLS_SERVING}}};
+    std::vector<std::vector<ErrorCode>> cas_results;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchCASLocationStatus(request_context_.get(), {1}, cas_tasks, cas_results));
+
+    ids.clear();
+    ASSERT_EQ(EC_OK,
+              meta_searcher->BatchAddLocation(
+                  request_context_.get(), {1}, {make_hot_loc("dummy://hot_02/blk1_b?size=1")}, ids));
+    ASSERT_EQ(1u, ids.size());
+    cas_tasks = {{MetaSearcher::LocationCASTask{ids[0], CLS_WRITING, CLS_SERVING}}};
+    cas_results.clear();
+    ASSERT_EQ(EC_OK, meta_searcher->BatchCASLocationStatus(request_context_.get(), {1}, cas_tasks, cas_results));
+
+    cache_manager_->migration_manager()->MarkForTieredWrite("min_replica_satisfied_tiered", {1}, "cold_01");
+
+    CacheManager::KeyVector new_keys;
+    std::vector<std::string_view> new_sgn;
+    BlockMask block_mask;
+    std::vector<std::string> new_targets;
+    auto ec = cache_manager_->FilterWriteCache(request_context_.get(),
+                                               "min_replica_satisfied_tiered",
+                                               meta_searcher,
+                                               {1},
+                                               new_keys,
+                                               {},
+                                               new_sgn,
+                                               block_mask,
+                                               2,
+                                               new_targets);
+    ASSERT_EQ(EC_OK, ec);
+    ASSERT_EQ(1u, new_keys.size());
+    ASSERT_EQ(1, new_keys[0]);
+    ASSERT_EQ(1u, new_targets.size());
+    ASSERT_EQ("cold_01", new_targets[0]);
+}
+
+TEST_F(CacheManagerTest, TestFilterWriteCacheTieredMarkChecksSpecGroupOnTarget) {
+    EnableTieredMigrationStrategy();
+    std::vector<LocationSpecInfo> location_spec_infos = {
+        LocationSpecInfo("tp0_F0", 512),
+        LocationSpecInfo("tp1_F0", 512),
+        LocationSpecInfo("tp0_L1", 512),
+        LocationSpecInfo("tp1_L1", 512),
+    };
+    std::vector<LocationSpecGroup> location_spec_groups = {
+        LocationSpecGroup("F0", {"tp0_F0", "tp1_F0"}),
+        LocationSpecGroup("L1", {"tp0_L1", "tp1_L1"}),
+    };
+    auto expected = std::pair<ErrorCode, std::string>(EC_OK, default_storage_configs);
+    ASSERT_EQ(expected,
+              cache_manager_->RegisterInstance(request_context_.get(),
+                                               "default",
+                                               "tiered_spec_group",
+                                               64,
+                                               location_spec_infos,
+                                               createModelDeployment(),
+                                               location_spec_groups));
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("tiered_spec_group");
+    ASSERT_TRUE(meta_searcher);
+
+    auto cold_f0_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        2,
+        std::vector<LocationSpec>{
+            LocationSpec("tp0_F0", "dummy://cold_01/blk1/tp0_F0?size=1"),
+            LocationSpec("tp1_F0", "dummy://cold_01/blk1/tp1_F0?size=1"),
+        });
+    std::vector<std::string> ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {cold_f0_loc}, ids));
+    ASSERT_EQ(1u, ids.size());
+    cache_manager_->migration_manager()->MarkForTieredWrite("tiered_spec_group", {1}, "cold_01");
+
+    {
+        CacheManager::KeyVector new_keys;
+        const std::vector<std::string> location_spec_group_names = {"F0"};
+        std::vector<std::string_view> new_sgn;
+        BlockMask block_mask;
+        std::vector<std::string> new_targets;
+        auto ec = cache_manager_->FilterWriteCache(request_context_.get(),
+                                                   "tiered_spec_group",
+                                                   meta_searcher,
+                                                   {1},
+                                                   new_keys,
+                                                   location_spec_group_names,
+                                                   new_sgn,
+                                                   block_mask,
+                                                   1,
+                                                   new_targets);
+        ASSERT_EQ(EC_OK, ec);
+        ASSERT_TRUE(new_keys.empty());
+        ASSERT_TRUE(new_targets.empty());
+    }
+
+    {
+        CacheManager::KeyVector new_keys;
+        const std::vector<std::string> location_spec_group_names = {"L1"};
+        std::vector<std::string_view> new_sgn;
+        BlockMask block_mask;
+        std::vector<std::string> new_targets;
+        auto ec = cache_manager_->FilterWriteCache(request_context_.get(),
+                                                   "tiered_spec_group",
+                                                   meta_searcher,
+                                                   {1},
+                                                   new_keys,
+                                                   location_spec_group_names,
+                                                   new_sgn,
+                                                   block_mask,
+                                                   1,
+                                                   new_targets);
+        ASSERT_EQ(EC_OK, ec);
+        ASSERT_EQ(1u, new_keys.size());
+        ASSERT_EQ(1, new_keys[0]);
+        ASSERT_EQ(1u, new_sgn.size());
+        ASSERT_EQ("L1", new_sgn[0]);
+        ASSERT_EQ(1u, new_targets.size());
+        ASSERT_EQ("cold_01", new_targets[0]);
+    }
+}
+
+// GenWriteLocation 按 block 路由：marked block 的 location 落在目标冷 storage
+TEST_F(CacheManagerTest, TestGenWriteLocationTieredRouting) {
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "placeholder_id",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    // cold_01 由 fixture 注册（dummy + MightExist=true）。
+
+    CacheManager::KeyVector new_keys = {1, 2};
+    std::vector<std::string_view> new_sgn;
+    std::vector<std::string> tiered_targets = {"", "cold_01"}; // block 2 -> 冷层
+    CacheLocationVector new_locations;
+    auto ec = cache_manager_->GenWriteLocation(
+        request_context_.get(), "placeholder_id", new_keys, new_sgn, tiered_targets, new_locations);
+    ASSERT_EQ(EC_OK, ec);
+    ASSERT_EQ(2u, new_locations.size());
+    // block 2 被路由到 cold_01（DUMMY 类型）；block 1 走默认 storage（非 DUMMY）
+    ASSERT_TRUE(new_locations[1] != nullptr && new_locations[0] != nullptr);
+    ASSERT_EQ(DataStorageType::DATA_STORAGE_TYPE_DUMMY, new_locations[1]->type());
+    ASSERT_NE(DataStorageType::DATA_STORAGE_TYPE_DUMMY, new_locations[0]->type());
+}
+
+// 全部 block 都有 tiered target 时，不应因为默认 hot storage 不可选而阻断冷层写入。
+TEST_F(CacheManagerTest, TestGenWriteLocationAllTieredDoesNotRequireDefaultStorage) {
+    auto expected = std::pair<ErrorCode, std::string>(EC_OK, default_storage_configs);
+    ASSERT_EQ(expected,
+              cache_manager_->RegisterInstance(request_context_.get(),
+                                               "default",
+                                               "all_tiered_instance",
+                                               64,
+                                               createLocationSpecInfos(),
+                                               createModelDeployment(),
+                                               std::vector<LocationSpecGroup>()));
+    // cold_01 由 fixture 注册（dummy + MightExist=true）。
+    ASSERT_EQ(EC_OK, registry_manager_->DisableStorage(request_context_.get(), "nfs_01"));
+
+    CacheManager::KeyVector new_keys = {1, 2};
+    std::vector<std::string_view> new_sgn;
+    std::vector<std::string> tiered_targets = {"cold_01", "cold_01"};
+    CacheLocationVector new_locations;
+    auto ec = cache_manager_->GenWriteLocation(
+        request_context_.get(), "all_tiered_instance", new_keys, new_sgn, tiered_targets, new_locations);
+
+    ASSERT_EQ(EC_OK, ec);
+    ASSERT_EQ(2u, new_locations.size());
+    for (const auto &location : new_locations) {
+        ASSERT_NE(nullptr, location);
+        ASSERT_EQ(DataStorageType::DATA_STORAGE_TYPE_DUMMY, location->type());
+        for (const auto &spec : location->location_specs()) {
+            ASSERT_THAT(spec.uri(), HasSubstr("dummy://cold_01/"));
+        }
+    }
+}
+
+TEST_F(CacheManagerTest, TestGenWriteLocationMissingTieredTargetDoesNotFallback) {
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "missing_tiered_target",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    ASSERT_EQ(EC_OK, registry_manager_->data_storage_manager()->UnRegisterStorage("cold_01"));
+
+    CacheLocationVector new_locations;
+    ASSERT_EQ(EC_NOENT,
+              cache_manager_->GenWriteLocation(
+                  request_context_.get(), "missing_tiered_target", {1}, {}, {"cold_01"}, new_locations));
+    ASSERT_TRUE(new_locations.empty());
+}
+
+// FinishWriteCache 成功把本次 target CacheLocation 置为 SERVING 后清除 tiered-write mark
+TEST_F(CacheManagerTest, TestFinishWriteCacheClearsTieredMark) {
+    // 清标是 tiered migration 行为，仅对启用了 migration_strategies 的 group 生效。
+    EnableTieredMigrationStrategy();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "placeholder_id",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("placeholder_id");
+    ASSERT_TRUE(meta_searcher);
+    std::vector<std::string> source_ids;
+    {
+        auto loc = std::make_shared<CacheLocation>(
+            DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+            1,
+            std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot/blk1?size=1")});
+        ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {loc}, source_ids));
+    }
+    ASSERT_EQ(1u, source_ids.size());
+    cache_manager_->migration_manager()->MarkForTieredWrite("placeholder_id", {1}, "cold_01");
+    ASSERT_TRUE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("placeholder_id", 1));
+
+    auto target_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://cold_01/blk1?size=1")});
+    std::vector<std::string> target_ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {target_loc}, target_ids));
+    ASSERT_EQ(1u, target_ids.size());
+
+    auto info = std::make_unique<WriteLocationManager::WriteLocationInfo>();
+    info->keys = {1};
+    info->location_ids = {target_ids[0]};
+    BlockMask success_mask = static_cast<BlockMaskOffset>(1); // 全部成功
+    auto ec = cache_manager_->FinishWriteCache(
+        request_context_.get(), "placeholder_id", "sess_p5", success_mask, std::move(info));
+    ASSERT_EQ(EC_OK, ec);
+    ASSERT_FALSE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("placeholder_id", 1));
+
+    std::vector<CacheLocationMap> location_maps;
+    BlockMask empty_mask;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchGetLocation(request_context_.get(), {1}, empty_mask, location_maps));
+    ASSERT_EQ(1u, location_maps.size());
+    ASSERT_EQ(2u, location_maps[0].size());
+    EXPECT_NE(location_maps[0].end(), location_maps[0].find(source_ids[0]));
+    EXPECT_NE(location_maps[0].end(), location_maps[0].find(target_ids[0]));
+}
+
+TEST_F(CacheManagerTest, TestAdminMarkUsesMatchingStrategyTimeout) {
+    constexpr int64_t kTimeoutMs = 3000;
+    EnableTieredMigrationStrategy("default", "hot_01", "cold_01", kTimeoutMs);
+    cache_manager_->StartMigrationManager();
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "admin_mark_timeout_instance",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    auto *meta_searcher =
+        cache_manager_->meta_searcher_manager_->GetMetaSearcher("admin_mark_timeout_instance");
+    ASSERT_TRUE(meta_searcher);
+    auto source_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot_01/blk1?size=1")});
+    std::vector<std::string> source_ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {source_loc}, source_ids));
+    std::vector<std::vector<MetaSearcher::LocationUpdateTask>> status_tasks = {
+        {{source_ids[0], CacheLocationStatus::CLS_SERVING}}};
+    std::vector<std::vector<ErrorCode>> status_results;
+    ASSERT_EQ(EC_OK,
+              meta_searcher->BatchUpdateLocationStatus(
+                  request_context_.get(), {1}, status_tasks, status_results));
+
+    const auto before = std::chrono::system_clock::now();
+    const auto result = cache_manager_->MigrateCache(request_context_.get(),
+                                                     "admin-mark-timeout",
+                                                     "admin_mark_timeout_instance",
+                                                     "hot_01",
+                                                     "cold_01",
+                                                     false,
+                                                     true,
+                                                     {1},
+                                                     0);
+    const auto after = std::chrono::system_clock::now();
+    ASSERT_EQ(EC_OK, result.ec);
+    ASSERT_EQ(1, result.accepted);
+    ASSERT_EQ(0, result.rejected);
+
+    std::vector<MigrationManager::MarkQueryResult> marks;
+    ASSERT_EQ(EC_OK,
+              cache_manager_->migration_manager()->BatchGetTieredWriteTargets(
+                  "admin_mark_timeout_instance", {1}, marks));
+    ASSERT_EQ(1u, marks.size());
+    ASSERT_TRUE(marks[0].HasValidMark());
+    const auto before_deadline = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     before.time_since_epoch())
+                                     .count() +
+                                 kTimeoutMs;
+    const auto after_deadline =
+        std::chrono::duration_cast<std::chrono::milliseconds>(after.time_since_epoch()).count() + kTimeoutMs;
+    EXPECT_GE(marks[0].deadline_ms, before_deadline);
+    EXPECT_LE(marks[0].deadline_ms, after_deadline);
+}
+
+TEST_F(CacheManagerTest, TestAdminMarkAllowsUnmatchedTargetWithDefaultTimeout) {
+    EnableTieredMigrationStrategy("default", "hot_01", "cold_01", 3000);
+    cache_manager_->StartMigrationManager();
+    ASSERT_TRUE(RegisterDummyStorage("cold_02"));
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "admin_mark_unmatched_target",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    auto *meta_searcher =
+        cache_manager_->meta_searcher_manager_->GetMetaSearcher("admin_mark_unmatched_target");
+    ASSERT_TRUE(meta_searcher);
+    auto source_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot_01/blk1?size=1")});
+    std::vector<std::string> source_ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {source_loc}, source_ids));
+    ASSERT_EQ(1u, source_ids.size());
+    std::vector<std::vector<MetaSearcher::LocationUpdateTask>> status_tasks = {
+        {{source_ids[0], CacheLocationStatus::CLS_SERVING}}};
+    std::vector<std::vector<ErrorCode>> status_results;
+    ASSERT_EQ(EC_OK,
+              meta_searcher->BatchUpdateLocationStatus(
+                  request_context_.get(), {1}, status_tasks, status_results));
+
+    const auto before = std::chrono::system_clock::now();
+    const auto result = cache_manager_->MigrateCache(request_context_.get(),
+                                                     "admin-mark-unmatched-target",
+                                                     "admin_mark_unmatched_target",
+                                                     "hot_01",
+                                                     "cold_02",
+                                                     false,
+                                                     true,
+                                                     {1},
+                                                     0);
+    const auto after = std::chrono::system_clock::now();
+    ASSERT_EQ(EC_OK, result.ec);
+    ASSERT_EQ(1, result.accepted);
+    ASSERT_EQ(0, result.rejected);
+
+    std::vector<MigrationManager::MarkQueryResult> marks;
+    ASSERT_EQ(EC_OK,
+              cache_manager_->migration_manager()->BatchGetTieredWriteTargets(
+                  "admin_mark_unmatched_target", {1}, marks));
+    ASSERT_EQ(1u, marks.size());
+    ASSERT_TRUE(marks[0].HasValidMark());
+    EXPECT_EQ("cold_02", marks[0].target);
+    const auto before_deadline = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     before.time_since_epoch())
+                                     .count() +
+                                 MigrationMarkMethod::kDefaultTimeoutMs;
+    const auto after_deadline = std::chrono::duration_cast<std::chrono::milliseconds>(after.time_since_epoch()).count() +
+                                MigrationMarkMethod::kDefaultTimeoutMs;
+    EXPECT_GE(marks[0].deadline_ms, before_deadline);
+    EXPECT_LE(marks[0].deadline_ms, after_deadline);
+}
+
+TEST_F(CacheManagerTest, TestFinishWriteCacheFullBlockPolicyKeepsPartialMark) {
+    auto default_group = registry_manager_->instance_group_configs_["default"];
+    ASSERT_TRUE(default_group != nullptr);
+    default_group->cache_config_->set_migration_mark_clear_policy(
+        MigrationMarkClearPolicy::CLEAR_ON_FULL_BLOCK_COVERED);
+    // 清标只对启用了 migration_strategies 的 group 生效。
+    EnableTieredMigrationStrategy();
+
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "full_policy_instance",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("full_policy_instance");
+    ASSERT_TRUE(meta_searcher);
+
+    auto hot_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot_01/blk1?size=1")});
+    std::vector<std::string> hot_ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {hot_loc}, hot_ids));
+    cache_manager_->migration_manager()->MarkForTieredWrite("full_policy_instance", {1}, "cold_01");
+    ASSERT_TRUE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("full_policy_instance", 1));
+
+    auto partial_cold_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://cold_01/blk1/tp0?size=1")});
+    std::vector<std::string> partial_ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {partial_cold_loc}, partial_ids));
+    auto partial_info = std::make_unique<WriteLocationManager::WriteLocationInfo>();
+    partial_info->keys = {1};
+    partial_info->location_ids = {partial_ids[0]};
+    ASSERT_EQ(EC_OK,
+              cache_manager_->FinishWriteCache(request_context_.get(),
+                                               "full_policy_instance",
+                                               "sess_partial",
+                                               static_cast<BlockMaskOffset>(1),
+                                               std::move(partial_info)));
+    ASSERT_TRUE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("full_policy_instance", 1));
+
+    auto remaining_cold_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        3,
+        std::vector<LocationSpec>{
+            LocationSpec("tp1", "dummy://cold_01/blk1/tp1?size=1"),
+            LocationSpec("tp2", "dummy://cold_01/blk1/tp2?size=1"),
+            LocationSpec("tp3", "dummy://cold_01/blk1/tp3?size=1"),
+        });
+    std::vector<std::string> remaining_ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {remaining_cold_loc}, remaining_ids));
+    auto remaining_info = std::make_unique<WriteLocationManager::WriteLocationInfo>();
+    remaining_info->keys = {1};
+    remaining_info->location_ids = {remaining_ids[0]};
+    ASSERT_EQ(EC_OK,
+              cache_manager_->FinishWriteCache(request_context_.get(),
+                                               "full_policy_instance",
+                                               "sess_remaining",
+                                               static_cast<BlockMaskOffset>(1),
+                                               std::move(remaining_info)));
+    ASSERT_FALSE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("full_policy_instance", 1));
+}
+
+// FinishWriteCache 的 mark 清理只对启用了 tiered migration 的 instance group 生效，
+// 与 FilterWriteCache 的 mark 消费入口对称。未配置 migration_strategies 的 group（例如 admin
+// 旁路直接打标）不应在 finish 时清标——这类 mark 由 MigrationManager 的超时线程兜底清理。
+// 旧实现用 `migration_manager_ != nullptr`（恒真）当门，会错误地对无策略 group 也清标。
+TEST_F(CacheManagerTest, TestFinishWriteCacheSkipsTieredMarkWhenMigrationDisabled) {
+    // 注意：默认 "default" group 未启用 migration 策略（未调用 EnableTieredMigrationStrategy）。
+    cache_manager_->RegisterInstance(request_context_.get(),
+                                     "default",
+                                     "tiered_disabled_finish",
+                                     64,
+                                     createLocationSpecInfos(),
+                                     createModelDeployment(),
+                                     std::vector<LocationSpecGroup>());
+    MetaSearcher *meta_searcher = cache_manager_->meta_searcher_manager_->GetMetaSearcher("tiered_disabled_finish");
+    ASSERT_TRUE(meta_searcher);
+
+    auto hot_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://hot/blk1?size=1")});
+    std::vector<std::string> hot_ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {hot_loc}, hot_ids));
+
+    // 通过 admin 旁路直接打标（该 group 无策略）。
+    cache_manager_->migration_manager()->MarkForTieredWrite("tiered_disabled_finish", {1}, "cold_01");
+    ASSERT_TRUE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("tiered_disabled_finish", 1));
+
+    // 构造一个 finish 后会 SERVING 且覆盖 spec 的冷层 target：旧代码（判空恒真）据此清标，
+    // 新代码因该 group 未启用 migration 而跳过整段，mark 应保留。
+    auto target_loc = std::make_shared<CacheLocation>(
+        DataStorageType::DATA_STORAGE_TYPE_DUMMY,
+        1,
+        std::vector<LocationSpec>{LocationSpec("tp0", "dummy://cold_01/blk1?size=1")});
+    std::vector<std::string> target_ids;
+    ASSERT_EQ(EC_OK, meta_searcher->BatchAddLocation(request_context_.get(), {1}, {target_loc}, target_ids));
+    ASSERT_EQ(1u, target_ids.size());
+
+    auto info = std::make_unique<WriteLocationManager::WriteLocationInfo>();
+    info->keys = {1};
+    info->location_ids = {target_ids[0]};
+    BlockMask success_mask = static_cast<BlockMaskOffset>(1);
+    auto ec = cache_manager_->FinishWriteCache(
+        request_context_.get(), "tiered_disabled_finish", "sess_disabled", success_mask, std::move(info));
+    ASSERT_EQ(EC_OK, ec);
+    // 关键断言：未启用 migration 的 group，finish 不清标。
+    ASSERT_TRUE(cache_manager_->migration_manager()->IsMarkedForTieredWrite("tiered_disabled_finish", 1));
+}
+
 } // namespace kv_cache_manager

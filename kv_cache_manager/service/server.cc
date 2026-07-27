@@ -43,22 +43,49 @@ bool Server::Init(const ServerConfig &config) {
 
     config_ = config;
 
+    if (!config_.Check()) {
+        KVCM_LOG_ERROR("server config check failed");
+        return false;
+    }
+
     if (!CreateLeaderElector()) {
         return false;
     }
 
     auto registry_storage_uri = config_.GetRegistryStorageUri();
     registry_manager_.reset(new RegistryManager(registry_storage_uri, metrics_registry_));
-    registry_manager_->Init();
+    if (!registry_manager_->Init()) {
+        KVCM_LOG_ERROR("registry manager init failed");
+        return false;
+    }
 
     cache_manager_.reset(new CacheManager(metrics_registry_, registry_manager_, metrics_lifecycle_));
-    cache_manager_->Init(config_.GetSchedulePlanExecutorThreadCount(),
-                         config_.GetCacheReclaimerKeySamplingSizeTotal(),
-                         config_.GetCacheReclaimerKeySamplingSizePerTask(),
-                         config_.GetCacheReclaimerDelBatchSize(),
-                         config_.GetCacheReclaimerIdleIntervalMs(),
-                         config_.GetCacheReclaimerWorkerSize());
+    CacheReclaimerAsyncDeleteConfig async_delete_config;
+    async_delete_config.inflight_delete_timeout_ms = config_.GetCacheReclaimerInflightDeleteTimeoutMs();
+    async_delete_config.pending_location_limit_per_group_type =
+        config_.GetCacheReclaimerPendingLocationLimitPerGroupType();
+    async_delete_config.pending_bytes_limit_per_group_type = config_.GetCacheReclaimerPendingBytesLimitPerGroupType();
+    async_delete_config.pending_delete_handler_limit = config_.GetCacheReclaimerPendingDeleteHandlerLimit();
+    async_delete_config.pending_bytes_limit = config_.GetCacheReclaimerPendingBytesLimit();
+    if (!cache_manager_->Init(config_.GetSchedulePlanExecutorThreadCount(),
+                              config_.GetCacheReclaimerKeySamplingSizeTotal(),
+                              config_.GetCacheReclaimerKeySamplingSizePerTask(),
+                              config_.GetCacheReclaimerDelBatchSize(),
+                              config_.GetCacheReclaimerIdleIntervalMs(),
+                              config_.GetCacheReclaimerWorkerSize(),
+                              async_delete_config,
+                              config_.GetSchedulePlanMigrationWorkerBudget())) {
+        KVCM_LOG_ERROR("cache manager init failed");
+        return false;
+    }
     cache_manager_->PauseReclaimer(); // Resume after DoRecover
+
+    // Set revisit interval histogram configuration
+    auto boundaries = ServerConfig::ParseRevisitIntervalBuckets(config_.GetRevisitIntervalBuckets());
+    if (boundaries.empty()) {
+        boundaries = ServerConfig::GetDefaultRevisitIntervalBuckets();
+    }
+    cache_manager_->SetRevisitHistogramConfig(boundaries);
 
     CreateMetricsReporter();
     CreateAndRegisterEventPublisher();
@@ -98,6 +125,7 @@ void Server::OnBecomeLeader() {
         return;
     }
     cache_manager_->ResumeReclaimer();
+    cache_manager_->StartMigrationManager();
 
     meta_impl_->EnableLeaderOnlyRequests();
     admin_impl_->EnableLeaderOnlyRequests();
@@ -113,6 +141,10 @@ void Server::OnNoLongerLeader() {
 
     meta_impl_->WaitForAllLeaderOnlyRequestsToComplete();
     admin_impl_->WaitForAllLeaderOnlyRequestsToComplete();
+
+    // Stop migration after leader-only requests drain, so MigrateCache cannot submit
+    // new copy tasks after the migration monitor has stopped.
+    cache_manager_->StopMigrationManager();
 
     ErrorCode ec = cache_manager_->DoCleanup();
     if (ec != EC_OK) {
